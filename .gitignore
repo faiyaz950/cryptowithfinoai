@@ -1,0 +1,31 @@
+# ── Secrets — kabhi commit na karein ──────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Dependencies ──────────────────────────────────────────
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ── Local data ────────────────────────────────────────────
+# NOTE: SQLite sirf local development ke liye hai. Render ka filesystem
+# ephemeral hai — production mein managed database use karein.
+*.sqlite3
+*.db
+
+# ── OS / editor ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+
+# ── Vercel ────────────────────────────────────────────────
+.vercel

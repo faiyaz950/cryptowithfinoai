@@ -1,0 +1,41 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Ye repo poora backend hai, isliye rootDir ki zarurat nahi.
+# AI chat (FastAPI) aur crypto trading (Flask) dono main.py ke andar mount hain,
+# to ek hi service, ek hi URL.
+services:
+  - type: web
+    name: cryptowithfinoai-backend
+    runtime: python
+    plan: free
+    healthCheckPath: /health
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # requirements.txt fastapi 0.115 / pydantic 2.9 par pin hai, jo 3.12 par tested hai.
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # sync:false => Render value maangta hai; repo mein koi key nahi jaati.
+
+      # ── AI chat ─────────────────────────────────────────
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # Deployed frontend ka origin, bina trailing slash. CORS allow-list mein
+      # jaata hai — iske bina browser har request block kar dega.
+      - key: FRONTEND_URL
+        sync: false
+
+      # ── Crypto trading (Delta Exchange) ─────────────────
+      - key: DELTA_API_KEY
+        sync: false
+      - key: DELTA_SECRET_KEY
+        sync: false
+      # Sessions aur stored API keys encrypt karne ke liye.
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
