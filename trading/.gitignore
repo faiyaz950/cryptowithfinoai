@@ -1,0 +1,27 @@
+# Login data & secrets (sensitive)
+login_data.json
+broker_login_data.json
+crypto_trading.sqlite3
+*.sqlite3
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

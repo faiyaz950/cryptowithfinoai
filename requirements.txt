@@ -1,0 +1,36 @@
+# Ek hi backend service — AI chat (FastAPI) + crypto trading (Flask).
+# Install: pip install -r requirements.txt
+
+# ── Web layer ─────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart>=0.0.6
+python-dotenv==1.0.1
+# Flask app ko FastAPI ke andar mount karne ke liye (main.py dekhein)
+a2wsgi>=1.10.0
+
+# ── AI providers ──────────────────────────────────────────
+google-genai>=1.47.0
+# 1.54 httpx ka hata hua `proxies` kwarg use karta tha; google-genai ko httpx>=0.28.1
+# chahiye, isliye openai ko us version par rakha hai jo 0.28 ke saath chalta hai.
+openai>=1.57.0
+httpx>=0.28.1
+anthropic==0.40.0
+redis==5.2.0
+
+# ── Trading / market data ─────────────────────────────────
+flask>=2.0.0
+flask-cors>=3.0.0
+requests>=2.31.0
+pandas>=1.5.0
+websocket-client>=1.5.0
+
+# ── Storage aur crypto ────────────────────────────────────
+django>=4.2,<5
+PyMySQL>=1.1.0
+cryptography>=42.0.0
+
+# ── Optional: standalone backtrader script ────────────────
+# (trading/backtest_backtrader.py chalane ke liye)
+backtrader>=1.9.76.123

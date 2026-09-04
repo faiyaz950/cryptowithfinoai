@@ -1,0 +1,3784 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Trading Chart - EMA & Candles</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            min-height: 100vh;
+            padding: 20px;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(120, 119, 198, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(120, 119, 198, 0.1) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            margin-top: 20px;
+            margin-bottom: 30px;
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 24px;
+            box-shadow: 
+                0 20px 60px rgba(0, 0, 0, 0.3),
+                0 0 0 1px rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+            position: relative;
+            z-index: 1;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            color: white;
+            padding: 20px 30px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -10%;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
+            border-radius: 50%;
+            animation: pulse 8s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            letter-spacing: -0.5px;
+            position: relative;
+            z-index: 1;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .header p {
+            font-size: 13px;
+            opacity: 0.95;
+            font-weight: 400;
+            position: relative;
+            z-index: 1;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 11px;
+            opacity: 0.95;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+        }
+
+        select, input {
+            padding: 8px 12px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+
+        select:hover, input:hover {
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translateY(-2px);
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.1);
+        }
+
+        select option {
+            background: #667eea;
+            color: white;
+            padding: 10px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
+            color: white;
+            font-weight: 600;
+            padding: 8px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+            letter-spacing: 0.3px;
+        }
+
+        button:hover {
+            background: linear-gradient(135deg, #ff5252 0%, #ff3838 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 107, 107, 0.6);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: rgba(255, 255, 255, 0.2);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .market-info {
+            background: rgba(255, 255, 255, 0.12);
+            padding: 15px 20px;
+            border-radius: 12px;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            position: relative;
+            z-index: 1;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .info-label {
+            font-size: 12px;
+            opacity: 0.85;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .info-value {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .positive {
+            color: #10b981;
+            text-shadow: 0 2px 10px rgba(16, 185, 129, 0.3);
+        }
+
+        .negative {
+            color: #ef4444;
+            text-shadow: 0 2px 10px rgba(239, 68, 68, 0.3);
+        }
+
+        .chart-container {
+            padding: 20px;
+            position: relative;
+            background: #fafbfc;
+        }
+
+        #chart {
+            width: 100%;
+            height: 450px;
+            border-radius: 16px;
+            background: white;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e5e7eb;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+            backdrop-filter: blur(10px);
+        }
+
+        .spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #667eea;
+            border-right: 4px solid #764ba2;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading div {
+            color: #374151;
+            font-weight: 500;
+            font-size: 15px;
+        }
+
+        .error {
+            background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+            color: #dc2626;
+            padding: 18px 24px;
+            border-radius: 12px;
+            margin: 20px 30px;
+            border-left: 4px solid #ef4444;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.1);
+        }
+
+        .ema-controls {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            padding: 12px 30px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+            margin-bottom: 20px;
+        }
+
+        .ema-controls strong {
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-right: 8px;
+        }
+
+        .ema-controls label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            padding: 6px 12px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            font-weight: 500;
+            font-size: 13px;
+            color: #4b5563;
+        }
+
+        .ema-controls label:hover {
+            background: rgba(102, 126, 234, 0.1);
+            color: #667eea;
+        }
+
+        .ema-controls input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
+        .status {
+            padding: 18px 30px;
+            background: linear-gradient(135deg, #f9fafb 0%, #ffffff 100%);
+            border-top: 1px solid #e5e7eb;
+            font-size: 14px;
+            color: #6b7280;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status::before {
+            content: '●';
+            font-size: 8px;
+            color: #10b981;
+            animation: blink 2s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Login Section */
+        .login-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .login-box {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 24px;
+            padding: 50px 60px;
+            max-width: 450px;
+            width: 100%;
+            box-shadow: 
+                0 20px 60px rgba(0, 0, 0, 0.3),
+                0 0 0 1px rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            position: relative;
+            z-index: 1;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .login-header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .login-header p {
+            color: #6b7280;
+            font-size: 15px;
+            font-weight: 400;
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .form-group label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .form-group input {
+            padding: 14px 18px;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            font-size: 15px;
+            transition: all 0.3s ease;
+            background: #ffffff;
+            color: #374151;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-group input::placeholder {
+            color: #9ca3af;
+        }
+
+        .login-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .login-btn:active {
+            transform: translateY(0);
+        }
+
+        .login-footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .login-footer p {
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .login-footer a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .login-footer a:hover {
+            text-decoration: underline;
+        }
+
+        .login-container.hidden {
+            display: none;
+        }
+
+        /* Side Menu Styles */
+        .app-layout {
+            display: none;
+            min-height: 100vh;
+            position: relative;
+            z-index: 1;
+        }
+
+        .app-layout.active {
+            display: flex;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: linear-gradient(180deg, #1e1b4b 0%, #312e81 100%);
+            min-height: 100vh;
+            padding: 30px 0;
+            box-shadow: 4px 0 20px rgba(0, 0, 0, 0.2);
+            position: fixed;
+            left: 0;
+            top: 0;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            padding: 0 25px 30px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 30px;
+        }
+
+        .sidebar-header h2 {
+            color: white;
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .sidebar-header p {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 13px;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 16px 25px;
+            color: rgba(255, 255, 255, 0.8);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+        }
+
+        .menu-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border-left-color: #667eea;
+        }
+
+        .menu-item.active {
+            background: rgba(102, 126, 234, 0.2);
+            color: white;
+            border-left-color: #667eea;
+        }
+
+        .menu-item-icon {
+            margin-right: 12px;
+            font-size: 18px;
+        }
+
+        .main-content-area {
+            flex: 1;
+            margin-left: 260px;
+            padding: 20px;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            min-height: 100vh;
+        }
+
+        .page {
+            display: none;
+        }
+
+        .page.active {
+            display: block;
+        }
+
+        .logout-btn {
+            position: absolute;
+            bottom: 30px;
+            left: 25px;
+            right: 25px;
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            padding: 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .logout-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: rgba(239, 68, 68, 0.5);
+        }
+
+        /* Strategies Page Styles */
+        .strategies-container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .strategies-header {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 24px;
+            padding: 40px 50px;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .strategies-header h1 {
+            font-size: 36px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .strategies-content {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .strategy-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            border: 2px solid #e5e7eb;
+            transition: all 0.3s ease;
+        }
+
+        .strategy-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .strategy-card h3 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 10px;
+        }
+
+        .strategy-card p {
+            color: #6b7280;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 15px;
+        }
+
+        .strategy-params {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+
+        .param-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .param-item label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .param-item input,
+        .param-item select {
+            padding: 10px 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #374151;
+            transition: all 0.3s ease;
+        }
+
+        .param-item input:focus,
+        .param-item select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .strategy-actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+            padding: 12px 24px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .backtest-reports-section {
+            margin-top: 16px;
+            padding: 14px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+        }
+
+        .backtest-reports-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .backtest-reports-list {
+            max-height: 300px;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        .backtest-reports-actions {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 10px;
+        }
+
+        .backtest-reports-download-btn {
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            color: #4338ca;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: none;
+        }
+
+        .backtest-reports-download-btn:hover {
+            background: #e0e7ff;
+            border-color: #a5b4fc;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(67, 56, 202, 0.15);
+        }
+
+        .backtest-report-empty {
+            padding: 12px;
+            background: #ffffff;
+            border: 1px dashed #cbd5e1;
+            border-radius: 8px;
+            color: #64748b;
+            font-size: 12px;
+        }
+
+        .backtest-report-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+        }
+
+        .backtest-report-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .backtest-report-symbol {
+            font-size: 12px;
+            font-weight: 700;
+            color: #374151;
+        }
+
+        .backtest-report-time {
+            font-size: 11px;
+            color: #6b7280;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .backtest-report-line {
+            font-size: 11px;
+            color: #4b5563;
+            line-height: 1.5;
+        }
+
+        .backtest-report-line + .backtest-report-line {
+            margin-top: 4px;
+        }
+
+        .backtest-report-pnl-positive {
+            color: #059669;
+            font-weight: 700;
+        }
+
+        .backtest-report-pnl-negative {
+            color: #dc2626;
+            font-weight: 700;
+        }
+
+        @media (max-width: 768px) {
+            .backtest-reports-section {
+                padding: 12px;
+            }
+
+            .backtest-report-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .backtest-report-time {
+                text-align: left;
+                white-space: normal;
+            }
+        }
+
+        /* Home Page Additional Content */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .dashboard-card {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e5e7eb;
+            transition: all 0.3s ease;
+        }
+
+        .dashboard-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+        }
+
+        .dashboard-card h3 {
+            font-size: 18px;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .dashboard-card .card-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+
+        .dashboard-card .card-label {
+            font-size: 13px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .dashboard-card .card-change {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .card-change.positive {
+            color: #10b981;
+        }
+
+        .card-change.negative {
+            color: #ef4444;
+        }
+
+        .content-section {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            margin-top: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e5e7eb;
+        }
+
+        .content-section h3 {
+            font-size: 20px;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .activity-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .activity-item {
+            padding: 15px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: background 0.2s ease;
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-item:hover {
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+
+        .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .activity-icon.buy {
+            background: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+        }
+
+        .activity-icon.sell {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+
+        .activity-icon.info {
+            background: rgba(102, 126, 234, 0.1);
+            color: #667eea;
+        }
+
+        .activity-content {
+            flex: 1;
+        }
+
+        .activity-title {
+            font-weight: 600;
+            color: #374151;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .activity-time {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .news-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .news-item {
+            padding: 20px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 12px;
+            border: 1px solid #e5e7eb;
+            transition: all 0.3s ease;
+        }
+
+        .news-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);
+        }
+
+        .news-item h4 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .news-item p {
+            font-size: 13px;
+            color: #6b7280;
+            line-height: 1.6;
+            margin-bottom: 10px;
+        }
+
+        .news-date {
+            font-size: 11px;
+            color: #9ca3af;
+            font-weight: 500;
+        }
+
+        .home-content-wrapper {
+            max-width: 1600px;
+            margin: 0 auto;
+            margin-top: 20px;
+        }
+
+        /* Trading Panel Styles */
+        .trading-panel {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e5e7eb;
+        }
+
+        .trading-panel h3 {
+            font-size: 20px;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .trading-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .trading-form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .trading-form-group label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .trading-form-group input,
+        .trading-form-group select {
+            padding: 10px 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #374151;
+            transition: all 0.3s ease;
+        }
+
+        .trading-form-group input:focus,
+        .trading-form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .trading-buttons {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .btn-buy {
+            flex: 1;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+        }
+
+        .btn-buy:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.6);
+        }
+
+        .btn-sell {
+            flex: 1;
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+        }
+
+        .btn-sell:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(239, 68, 68, 0.6);
+        }
+
+        .orders-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .orders-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .orders-card h4 {
+            font-size: 16px;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 15px;
+        }
+
+        .order-item {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .order-item:last-child {
+            border-bottom: none;
+        }
+
+        .order-info {
+            flex: 1;
+        }
+
+        .order-symbol {
+            font-weight: 600;
+            color: #374151;
+            font-size: 14px;
+        }
+
+        .order-details {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        .order-side {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .order-side.buy {
+            background: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+        }
+
+        .order-side.sell {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+        }
+
+        .order-status {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+
+        .positions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .position-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 12px;
+            padding: 15px;
+            border: 2px solid #e5e7eb;
+            transition: all 0.3s ease;
+        }
+
+        .position-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.1);
+        }
+
+        .position-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .position-symbol {
+            font-weight: 700;
+            font-size: 16px;
+            color: #374151;
+        }
+
+        .position-pnl {
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .position-pnl.positive {
+            color: #10b981;
+        }
+
+        .position-pnl.negative {
+            color: #ef4444;
+        }
+
+        .position-details {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <!-- App Layout with Side Menu -->
+    <div class="app-layout" id="appLayout">
+        <!-- Side Menu -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>📈 Crypto Trading</h2>
+                <p id="userGreeting">Delta India · built-in API keys</p>
+            </div>
+            <div class="menu-item active" onclick="showPage('home')" id="menuHome">
+                <span class="menu-item-icon">🏠</span>
+                <span>Home</span>
+            </div>
+            <div class="menu-item" onclick="showPage('strategies')" id="menuStrategies">
+                <span class="menu-item-icon">📊</span>
+                <span>Strategies</span>
+            </div>
+            <div class="menu-item" onclick="showPage('backtest')" id="menuBacktest">
+                <span class="menu-item-icon">📈</span>
+                <span>Backtest</span>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="main-content-area">
+            <!-- Home Page -->
+            <div class="page active" id="homePage">
+                <div class="home-content-wrapper">
+                    <!-- Chart Section -->
+                    <div class="container">
+        <div class="header">
+            <h1>📈 Crypto Trading Chart</h1>
+            <p style="margin-top: 4px; opacity: 0.95; font-size: 13px; font-weight: 400;">Real-time EMA & Candlestick Analysis</p>
+            <div class="controls">
+                <div class="control-group">
+                    <label>Symbol</label>
+                    <select id="symbol">
+                        <option value="BTCUSDT">BTC/USDT</option>
+                        <option value="ETHUSDT">ETH/USDT</option>
+                        <option value="BNBUSDT">BNB/USDT</option>
+                        <option value="ADAUSDT">ADA/USDT</option>
+                        <option value="SOLUSDT">SOL/USDT</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Interval</label>
+                    <select id="interval">
+                        <option value="1m">1 Minute</option>
+                        <option value="5m">5 Minutes</option>
+                        <option value="15m">15 Minutes</option>
+                        <option value="1h" selected>1 Hour</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1d">1 Day</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Candles</label>
+                    <input type="number" id="limit" value="100" min="10" max="500" style="width: 80px;">
+                </div>
+                <div class="control-group">
+                    <label>&nbsp;</label>
+                    <button id="loadBtn" onclick="loadData()">🔄 Load Data</button>
+                </div>
+            </div>
+            <div class="market-info" id="marketInfo" style="display: none;">
+                <div class="info-item">
+                    <span class="info-label">Current Price</span>
+                    <span class="info-value" id="currentPrice">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">24h Change</span>
+                    <span class="info-value" id="change24h">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">24h High</span>
+                    <span class="info-value" id="high24h">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">24h Low</span>
+                    <span class="info-value" id="low24h">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="ema-controls">
+            <strong>EMA Lines:</strong>
+            <label><input type="checkbox" id="ema9" checked> EMA 9</label>
+            <label><input type="checkbox" id="ema21" checked> EMA 21</label>
+            <label><input type="checkbox" id="ema50" checked> EMA 50</label>
+        </div>
+
+        <div class="chart-container">
+            <div class="loading" id="loading" style="display: none;">
+                <div class="spinner"></div>
+                <div>Data load ho raha hai...</div>
+            </div>
+            <div id="error" class="error" style="display: none;"></div>
+            <div id="chart"></div>
+        </div>
+
+        <div class="status" id="status">
+            Ready - Data load karne ke liye "Load Data" button click karein
+        </div>
+    </div>
+
+                    <!-- Trading Panel -->
+                    <div class="trading-panel">
+                        <h3>⚡ Quick Trade</h3>
+                        <form class="trading-form" id="tradingForm">
+                            <div class="trading-form-group">
+                                <label>Symbol</label>
+                                <select id="tradeSymbol">
+                                    <option value="BTCUSDT">BTC/USDT</option>
+                                    <option value="ETHUSDT">ETH/USDT</option>
+                                    <option value="BNBUSDT">BNB/USDT</option>
+                                    <option value="ADAUSDT">ADA/USDT</option>
+                                    <option value="SOLUSDT">SOL/USDT</option>
+                                </select>
+                            </div>
+                            <div class="trading-form-group">
+                                <label>Order Type</label>
+                                <select id="orderType">
+                                    <option value="market">Market</option>
+                                    <option value="limit" selected>Limit</option>
+                                </select>
+                            </div>
+                            <div class="trading-form-group">
+                                <label>Quantity</label>
+                                <input type="number" id="tradeQuantity" placeholder="0.001" step="0.001" min="0.001" required>
+                            </div>
+                            <div class="trading-form-group" id="priceGroup">
+                                <label>Price (USDT)</label>
+                                <input type="number" id="tradePrice" placeholder="Auto" step="0.01" min="0.01">
+                            </div>
+                            <div id="tradeAccountStatus" style="font-size: 12px; color: #065f46; margin-top: 6px;">
+                                Orders / positions use server keys from <code style="font-size: 11px;">backend_api.py</code> (API_KEY / SECRET_KEY).
+                            </div>
+                        </form>
+                        <div class="trading-buttons">
+                            <button class="btn-buy" onclick="placeOrder('buy')">📈 BUY</button>
+                            <button class="btn-sell" onclick="placeOrder('sell')">📉 SELL</button>
+                        </div>
+
+                        <!-- Positions Section -->
+                        <div style="margin-top: 30px;">
+                            <h4 style="font-size: 16px; font-weight: 700; color: #374151; margin-bottom: 15px;">💼 Open Positions</h4>
+                            <div id="positionsError" style="display: none; color: #b91c1c; font-size: 14px; margin-bottom: 10px;"></div>
+                            <div class="positions-grid" id="positionsGrid">
+                                <div class="position-card">
+                                    <div class="position-header">
+                                        <span class="position-symbol">BTC/USDT</span>
+                                        <span class="position-pnl positive">+$125.50</span>
+                                    </div>
+                                    <div class="position-details">
+                                        Size: 0.05 BTC | Entry: $42,500 | Current: $42,750
+                                    </div>
+                                </div>
+                                <div class="position-card">
+                                    <div class="position-header">
+                                        <span class="position-symbol">ETH/USDT</span>
+                                        <span class="position-pnl negative">-$45.20</span>
+                                    </div>
+                                    <div class="position-details">
+                                        Size: 2.5 ETH | Entry: $2,800 | Current: $2,782
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Orders Section -->
+                        <div class="orders-section" style="margin-top: 30px;">
+                            <div class="orders-card">
+                                <h4>📋 Open Orders</h4>
+                                <div id="openOrders">
+                                    <div class="order-item">
+                                        <div class="order-info">
+                                            <div class="order-symbol">BTC/USDT</div>
+                                            <div class="order-details">Limit Buy | Qty: 0.01 | Price: $42,500</div>
+                                            <div class="order-status">Pending</div>
+                                        </div>
+                                        <div>
+                                            <span class="order-side buy">BUY</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="orders-card">
+                                <h4>📜 Order History</h4>
+                                <div id="orderHistory">
+                                    <div class="order-item">
+                                        <div class="order-info">
+                                            <div class="order-symbol">ETH/USDT</div>
+                                            <div class="order-details">Market Sell | Qty: 1.5 | Executed</div>
+                                            <div class="order-status">2 minutes ago</div>
+                                        </div>
+                                        <div>
+                                            <span class="order-side sell">SELL</span>
+                                        </div>
+                                    </div>
+                                    <div class="order-item">
+                                        <div class="order-info">
+                                            <div class="order-symbol">BTC/USDT</div>
+                                            <div class="order-details">Limit Buy | Qty: 0.05 | Executed</div>
+                                            <div class="order-status">1 hour ago</div>
+                                        </div>
+                                        <div>
+                                            <span class="order-side buy">BUY</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Activity Section -->
+                    <div class="content-section">
+                        <h3>📋 Recent Activity</h3>
+                        <ul class="activity-list">
+                            <li class="activity-item">
+                                <div class="activity-icon buy">📈</div>
+                                <div class="activity-content">
+                                    <div class="activity-title">Buy Order Executed - BTC/USDT</div>
+                                    <div class="activity-time">2 minutes ago</div>
+                                </div>
+                            </li>
+                            <li class="activity-item">
+                                <div class="activity-icon sell">📉</div>
+                                <div class="activity-content">
+                                    <div class="activity-title">Sell Order Executed - ETH/USDT</div>
+                                    <div class="activity-time">15 minutes ago</div>
+                                </div>
+                            </li>
+                            <li class="activity-item">
+                                <div class="activity-icon info">ℹ️</div>
+                                <div class="activity-content">
+                                    <div class="activity-title">EMA Crossover Strategy Activated</div>
+                                    <div class="activity-time">1 hour ago</div>
+                                </div>
+                            </li>
+                            <li class="activity-item">
+                                <div class="activity-icon buy">📈</div>
+                                <div class="activity-content">
+                                    <div class="activity-title">Buy Signal Detected - BNB/USDT</div>
+                                    <div class="activity-time">2 hours ago</div>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <!-- Market News Section -->
+                    <div class="content-section">
+                        <h3>📰 Market News & Updates</h3>
+                        <div class="news-grid">
+                            <div class="news-item">
+                                <h4>Bitcoin Reaches New High</h4>
+                                <p>Bitcoin price surged to $45,000 following positive market sentiment and institutional adoption news.</p>
+                                <div class="news-date">2 hours ago</div>
+                            </div>
+                            <div class="news-item">
+                                <h4>Ethereum 2.0 Update</h4>
+                                <p>Ethereum network upgrade shows promising results with improved transaction speeds and lower fees.</p>
+                                <div class="news-date">5 hours ago</div>
+                            </div>
+                            <div class="news-item">
+                                <h4>Market Analysis: Bull Run Continues</h4>
+                                <p>Technical indicators suggest continued bullish momentum across major cryptocurrencies this week.</p>
+                                <div class="news-date">1 day ago</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Strategies Page -->
+            <div class="page" id="strategiesPage">
+                <div class="strategies-container">
+                    <div class="strategies-header">
+                        <h1>📊 Trading Strategies</h1>
+                        <p style="color: #6b7280; font-size: 16px; margin-top: 10px;">Manage and configure your trading strategies</p>
+                    </div>
+                    <div class="strategies-content">
+                        <div class="strategy-card">
+                            <h3>📈 EMA Crossover Strategy</h3>
+                            <p>This strategy uses Exponential Moving Average (EMA) crossovers to identify buy and sell signals. When a shorter EMA crosses above a longer EMA, it generates a buy signal, and vice versa.</p>
+                            <div class="strategy-params">
+                                <div class="param-item">
+                                    <label>Fast EMA Period</label>
+                                    <input type="number" id="fastEma" value="9" min="1" max="50">
+                                </div>
+                                <div class="param-item">
+                                    <label>Slow EMA Period</label>
+                                    <input type="number" id="slowEma" value="21" min="1" max="200">
+                                </div>
+                                <div class="param-item">
+                                    <label>Symbol</label>
+                                    <select id="strategySymbol">
+                                        <option value="BTCUSDT">BTC/USDT</option>
+                                        <option value="ETHUSDT">ETH/USDT</option>
+                                        <option value="BNBUSDT">BNB/USDT</option>
+                                        <option value="ADAUSDT">ADA/USDT</option>
+                                        <option value="SOLUSDT">SOL/USDT</option>
+                                    </select>
+                                </div>
+                                <div class="param-item">
+                                    <label>Interval</label>
+                                    <select id="strategyInterval">
+                                        <option value="1m">1 Minute</option>
+                                        <option value="5m">5 Minutes</option>
+                                        <option value="15m">15 Minutes</option>
+                                        <option value="1h" selected>1 Hour</option>
+                                        <option value="4h">4 Hours</option>
+                                        <option value="1d">1 Day</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="strategy-actions">
+                                <button class="btn-primary" onclick="activateStrategy('ema-crossover')">✅ Activate Strategy</button>
+                                <button class="btn-secondary" onclick="testStrategy('ema-crossover')">🧪 Test Strategy</button>
+                            </div>
+                        </div>
+
+                        <div class="strategy-card">
+                            <h3>🕯️ RSI Divergence Strategy</h3>
+                            <p>This strategy identifies Relative Strength Index (RSI) divergences to find potential reversal points. RSI values above 70 indicate overbought conditions, while values below 30 indicate oversold conditions.</p>
+                            <div class="strategy-params">
+                                <div class="param-item">
+                                    <label>RSI Period</label>
+                                    <input type="number" id="rsiPeriod" value="14" min="1" max="50">
+                                </div>
+                                <div class="param-item">
+                                    <label>Overbought Level</label>
+                                    <input type="number" id="overbought" value="70" min="50" max="90">
+                                </div>
+                                <div class="param-item">
+                                    <label>Oversold Level</label>
+                                    <input type="number" id="oversold" value="30" min="10" max="50">
+                                </div>
+                                <div class="param-item">
+                                    <label>Symbol</label>
+                                    <select id="rsiSymbol">
+                                        <option value="BTCUSDT">BTC/USDT</option>
+                                        <option value="ETHUSDT">ETH/USDT</option>
+                                        <option value="BNBUSDT">BNB/USDT</option>
+                                        <option value="ADAUSDT">ADA/USDT</option>
+                                        <option value="SOLUSDT">SOL/USDT</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="strategy-actions">
+                                <button class="btn-primary" onclick="activateStrategy('rsi-divergence')">✅ Activate Strategy</button>
+                                <button class="btn-secondary" onclick="testStrategy('rsi-divergence')">🧪 Test Strategy</button>
+                            </div>
+                        </div>
+
+                        <div class="strategy-card">
+                            <h3>📊 MACD Strategy</h3>
+                            <p>The Moving Average Convergence Divergence (MACD) strategy uses the MACD indicator and its signal line to generate trading signals. A bullish signal occurs when MACD crosses above the signal line.</p>
+                            <div class="strategy-params">
+                                <div class="param-item">
+                                    <label>Fast Period</label>
+                                    <input type="number" id="macdFast" value="12" min="1" max="50">
+                                </div>
+                                <div class="param-item">
+                                    <label>Slow Period</label>
+                                    <input type="number" id="macdSlow" value="26" min="1" max="100">
+                                </div>
+                                <div class="param-item">
+                                    <label>Signal Period</label>
+                                    <input type="number" id="macdSignal" value="9" min="1" max="50">
+                                </div>
+                                <div class="param-item">
+                                    <label>Symbol</label>
+                                    <select id="macdSymbol">
+                                        <option value="BTCUSDT">BTC/USDT</option>
+                                        <option value="ETHUSDT">ETH/USDT</option>
+                                        <option value="BNBUSDT">BNB/USDT</option>
+                                        <option value="ADAUSDT">ADA/USDT</option>
+                                        <option value="SOLUSDT">SOL/USDT</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="strategy-actions">
+                                <button class="btn-primary" onclick="activateStrategy('macd')">✅ Activate Strategy</button>
+                                <button class="btn-secondary" onclick="testStrategy('macd')">🧪 Test Strategy</button>
+                            </div>
+                        </div>
+
+                        <div class="strategy-card" style="border: 2px solid #667eea; background: linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%);">
+                            <h3>🎯 Custom EMA Crossover Strategy</h3>
+                            <p><strong>Logic:</strong> Jab EMA 9 aur EMA 21 dono EMA 50 ko cross down karein to SELL, aur jab cross above ho to BUY. <strong>Timeframe: 5 minutes</strong>. Neeche <strong>SL / Target (points)</strong> daal sakte ho — Live trade par mark price se position auto cut hogi (jaise SL 500, Target 2000).</p>
+                            <div class="strategy-params">
+                                <div class="param-item">
+                                    <label>EMA 9</label>
+                                    <input type="number" id="customEma9" value="9" min="1" max="50" step="1">
+                                </div>
+                                <div class="param-item">
+                                    <label>EMA 21</label>
+                                    <input type="number" id="customEma21" value="21" min="1" max="200" step="1">
+                                </div>
+                                <div class="param-item">
+                                    <label>EMA 50</label>
+                                    <input type="number" id="customEma50" value="50" min="1" max="200" step="1">
+                                </div>
+                                <div class="param-item">
+                                    <label>Symbol</label>
+                                    <select id="customStrategySymbol">
+                                        <option value="BTCUSDT">BTC/USDT</option>
+                                        <option value="ETHUSDT">ETH/USDT</option>
+                                        <option value="BNBUSDT">BNB/USDT</option>
+                                        <option value="ADAUSDT">ADA/USDT</option>
+                                        <option value="SOLUSDT">SOL/USDT</option>
+                                    </select>
+                                </div>
+                                <div class="param-item">
+                                    <label>Order Quantity</label>
+                                    <input type="number" id="customStrategyQty" value="0.001" step="0.001" min="0.001" placeholder="0.001">
+                                </div>
+                                <div class="param-item">
+                                    <label>Stop Loss (Points)</label>
+                                    <input type="number" id="customStrategySL" value="400" min="1" step="1" placeholder="400">
+                                </div>
+                                <div class="param-item">
+                                    <label>Target (Points)</label>
+                                    <input type="number" id="customStrategyTarget" value="800" min="1" step="1" placeholder="800">
+                                </div>
+                                <div class="param-item">
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="customStrategySlTpAuto" style="width: auto; margin: 0;" checked>
+                                        Live: SL / Target par position auto close
+                                    </label>
+                                    <span style="font-size: 11px; color: #6b7280; display: block; margin-top: 4px;">Points = entry se kitna move par exit (SL loss side, target profit side).</span>
+                                </div>
+                                <div class="param-item">
+                                    <label>Auto Trade (Delta Exchange)</label>
+                                    <select id="customAutoTrade">
+                                        <option value="false">Manual (Signal Only)</option>
+                                        <option value="true">Live (Delta Exchange)</option>
+                                    </select>
+                                </div>
+                                <div class="param-item">
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="customNoEntryWindow" style="width: auto; margin: 0;" checked>
+                                        Block Entries (11:00-14:00 IST)
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <!-- Backtest Parameters -->
+                            <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #3b82f6;">
+                                <h4 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 12px;">📊 Backtest Settings</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+                                    <div class="param-item">
+                                        <label>Days</label>
+                                        <input type="number" id="backtestPeriod" value="30" min="1" max="700" step="1" placeholder="e.g. 30" title="Backtest period in days">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Lots</label>
+                                        <input type="number" id="backtestLots" value="1" min="0.01" step="0.01" placeholder="1" title="Position size (lots) for P&amp;L">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Timeframe</label>
+                                        <select id="backtestTimeframe">
+                                            <option value="1m">1 Minute</option>
+                                            <option value="3m">3 Minutes</option>
+                                            <option value="5m" selected>5 Minutes</option>
+                                            <option value="15m">15 Minutes</option>
+                                            <option value="30m">30 Minutes</option>
+                                            <option value="1h">1 Hour</option>
+                                            <option value="4h">4 Hours</option>
+                                            <option value="1d">1 Day</option>
+                                        </select>
+                                    </div>
+                                    <div class="param-item">
+                                        <label style="display: flex; align-items: center; gap: 8px;">
+                                            <input type="checkbox" id="backtestUseRSI" style="width: auto; margin: 0;">
+                                            Enable RSI
+                                        </label>
+                                    </div>
+                                    <div class="param-item">
+                                        <label>RSI Period</label>
+                                        <input type="number" id="backtestRSIPeriod" value="14" min="1" max="50" step="1" placeholder="14" title="RSI period for filter">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Overbought Level</label>
+                                        <input type="number" id="backtestRSIOverbought" value="60" min="50" max="100" step="1" placeholder="60" title="RSI overbought threshold">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Oversold Level</label>
+                                        <input type="number" id="backtestRSIOversold" value="40" min="0" max="50" step="1" placeholder="40" title="RSI oversold threshold">
+                                    </div>
+                                    <div class="param-item">
+                                        <label style="display: flex; align-items: center; gap: 8px;">
+                                            <input type="checkbox" id="backtestNoEntryWindow" style="width: auto; margin: 0;" checked>
+                                            Block Entries (11:00-14:00 IST)
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div style="margin-top: 15px; padding: 12px; background: rgba(102, 126, 234, 0.1); border-radius: 8px; font-size: 13px; color: #374151;">
+                                <strong>Status:</strong> <span id="customStrategyStatus">Inactive</span>
+                            </div>
+                            
+                            <!-- Detailed EMA Information Display -->
+                            <div id="emaDetailsSection" style="margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #e5e7eb; display: none;">
+                                <h4 style="font-size: 16px; font-weight: 700; color: #374151; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                                    📊 Current EMA Values
+                                </h4>
+                                
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                                    <div style="padding: 12px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                        <div id="ema9Label" style="font-size: 11px; color: #6b7280; font-weight: 600; margin-bottom: 5px;">EMA 9</div>
+                                        <div id="ema9Value" style="font-size: 18px; font-weight: 700; color: #f59e0b;">-</div>
+                                    </div>
+                                    <div style="padding: 12px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                        <div id="ema21Label" style="font-size: 11px; color: #6b7280; font-weight: 600; margin-bottom: 5px;">EMA 21</div>
+                                        <div id="ema21Value" style="font-size: 18px; font-weight: 700; color: #3b82f6;">-</div>
+                                    </div>
+                                    <div style="padding: 12px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                        <div id="ema50Label" style="font-size: 11px; color: #6b7280; font-weight: 600; margin-bottom: 5px;">EMA 50</div>
+                                        <div id="ema50Value" style="font-size: 18px; font-weight: 700; color: #8b5cf6;">-</div>
+                                    </div>
+                                    <div style="padding: 12px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                        <div style="font-size: 11px; color: #6b7280; font-weight: 600; margin-bottom: 5px;">Current Price</div>
+                                        <div id="currentPriceValue" style="font-size: 18px; font-weight: 700; color: #374151;">-</div>
+                                    </div>
+                                </div>
+
+                                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb; margin-bottom: 15px;">
+                                    <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 10px;">📈 Crossover Analysis</div>
+                                    <div id="crossoverAnalysis" style="font-size: 12px; color: #6b7280; line-height: 1.8;">
+                                        <div id="ema9vs50Label">EMA 9 vs EMA 50: <span id="ema9vs50" style="font-weight: 600;">-</span></div>
+                                        <div id="ema21vs50Label">EMA 21 vs EMA 50: <span id="ema21vs50" style="font-weight: 600;">-</span></div>
+                                        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;">
+                                            <strong>Current State:</strong> <span id="currentState" style="font-weight: 700; font-size: 13px;">-</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                    <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 10px;">📋 Strategy Log</div>
+                                    <div id="strategyLog" style="max-height: 200px; overflow-y: auto; font-size: 11px; color: #6b7280; line-height: 1.6; font-family: 'Courier New', monospace;">
+                                        <div style="padding: 5px; color: #9ca3af;">Waiting for data...</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="strategy-actions">
+                                <button class="btn-primary" onclick="activateCustomEMAStrategy()">✅ Activate Strategy (Live)</button>
+                                <button class="btn-secondary" onclick="deactivateCustomEMAStrategy()">⏸️ Deactivate</button>
+                                <button class="btn-secondary" onclick="runBacktest()">📊 Run Professional Backtest</button>
+                            </div>
+                            
+                            <!-- Backtest Results Section -->
+                            <div id="backtestResults" style="margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #3b82f6; display: none;">
+                                <h4 id="backtestResultsTitle" style="font-size: 16px; font-weight: 700; color: #374151; margin-bottom: 15px;">📊 Backtest Results</h4>
+                                <div id="backtestStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                                    <!-- Stats will be populated here -->
+                                </div>
+                                <div id="backtestTrades" style="max-height: 300px; overflow-y: auto;">
+                                    <!-- Trade list will be populated here -->
+                                </div>
+                                <div class="backtest-reports-section">
+                                    <h5 class="backtest-reports-title">📑 Backtest Reports History</h5>
+                                    <div class="backtest-reports-actions">
+                                        <button class="backtest-reports-download-btn" onclick="downloadBacktestReports()">⬇️ Download Excel</button>
+                                    </div>
+                                    <div id="backtestReportsHistory" class="backtest-reports-list">
+                                        <div class="backtest-report-empty">Run backtest to generate report history.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backtest Page (dedicated) -->
+            <div class="page" id="backtestPage">
+                <div class="strategies-container" style="max-width: 900px; margin: 0 auto;">
+                    <div class="strategies-header">
+                        <h1>📈 Strategy Backtest</h1>
+                        <p style="color: #6b7280; font-size: 16px; margin-top: 10px;">EMA Crossover aur Range Breakout strategies ko historical data par test karein (Delta Exchange)</p>
+                    </div>
+                    <div class="strategies-content">
+                        <div class="strategy-card" style="padding: 24px;">
+                            <h3 style="margin-bottom: 20px;">📊 Backtest Parameters</h3>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px;">
+                                <div class="param-item">
+                                    <label>Strategy</label>
+                                    <select id="backtestPageStrategy" onchange="syncBacktestPageStrategyUI()">
+                                        <option value="ema-crossover" selected>EMA Crossover</option>
+                                        <option value="range-breakout">Range Breakout (Time Range + RSI)</option>
+                                    </select>
+                                </div>
+                                <div class="param-item">
+                                    <label>Symbol</label>
+                                    <select id="backtestPageSymbol">
+                                        <option value="BTCUSDT">BTC/USDT</option>
+                                        <option value="ETHUSDT">ETH/USDT</option>
+                                        <option value="BNBUSDT">BNB/USDT</option>
+                                        <option value="ADAUSDT">ADA/USDT</option>
+                                        <option value="SOLUSDT">SOL/USDT</option>
+                                    </select>
+                                </div>
+                                <div class="param-item">
+                                    <label>Days</label>
+                                    <input type="number" id="backtestPagePeriod" value="30" min="1" max="700" step="1" placeholder="e.g. 30" title="Backtest period in days">
+                                </div>
+                                <div class="param-item">
+                                    <label>Timeframe</label>
+                                    <select id="backtestPageTimeframe">
+                                        <option value="1m">1 Minute</option>
+                                        <option value="3m">3 Minutes</option>
+                                        <option value="5m" selected>5 Minutes</option>
+                                        <option value="15m">15 Minutes</option>
+                                        <option value="30m">30 Minutes</option>
+                                        <option value="1h">1 Hour</option>
+                                        <option value="4h">4 Hours</option>
+                                        <option value="1d">1 Day</option>
+                                    </select>
+                                </div>
+                                <div id="backtestPageEmaFields" style="display: contents;">
+                                    <div class="param-item">
+                                        <label>EMA 9</label>
+                                        <input type="number" id="backtestPageEma9" value="9" min="1" max="50">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>EMA 21</label>
+                                        <input type="number" id="backtestPageEma21" value="21" min="1" max="200">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>EMA 50</label>
+                                        <input type="number" id="backtestPageEma50" value="50" min="1" max="200">
+                                    </div>
+                                </div>
+                                <div id="backtestPageFixedRiskFields" style="display: contents;">
+                                    <div class="param-item">
+                                        <label>SL (Points)</label>
+                                        <input type="number" id="backtestPageSL" value="400" min="1" step="1">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Target (Points)</label>
+                                        <input type="number" id="backtestPageTarget" value="800" min="1" step="1">
+                                    </div>
+                                </div>
+                                <div class="param-item">
+                                    <label>Lots</label>
+                                    <input type="number" id="backtestPageLots" value="1" min="0.01" step="0.01" title="Position size (lots) for P&amp;L calculation">
+                                </div>
+                            </div>
+
+                            <!-- Range Breakout Params (shown only when selected) -->
+                            <div id="backtestPageRangeSection" style="display: none; margin-top: 10px; padding: 15px; background: linear-gradient(135deg, #eef2ff 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #6366f1;">
+                                <h4 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 12px;">🟦 Range Breakout Settings (IST)</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+                                    <div class="param-item">
+                                        <label>Range Start</label>
+                                        <input type="time" id="backtestPageRangeStart" value="11:00" step="60">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>Range End</label>
+                                        <input type="time" id="backtestPageRangeEnd" value="13:00" step="60">
+                                    </div>
+                                </div>
+                                <p style="font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4;">
+                                    💡 <strong>Logic:</strong> Range ke upar/neeche candle close ke baad, breakout candle ke high/low break par entry hoti hai, <strong>RSI filter mandatory</strong>. <strong>SL / Target (points)</strong> upar wale fields se — entry price se fixed points par exit.
+                                </p>
+                            </div>
+                            
+                            <!-- RSI Parameters Section -->
+                            <div style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #fef3c7 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #f59e0b;">
+                                <h4 id="backtestPageRsiTitle" style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 12px;">📈 RSI Filter Settings (Optional)</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+                                    <div class="param-item">
+                                        <label style="display: flex; align-items: center; gap: 8px;">
+                                            <input type="checkbox" id="backtestPageUseRSI" style="width: auto; margin: 0;">
+                                            Enable RSI Filter
+                                        </label>
+                                    </div>
+                                    <div class="param-item">
+                                        <label>RSI Period</label>
+                                        <input type="number" id="backtestPageRSIPeriod" value="14" min="1" max="50" placeholder="14">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>RSI Upper</label>
+                                        <input type="number" id="backtestPageRSIOverbought" value="60" min="50" max="100" placeholder="60">
+                                    </div>
+                                    <div class="param-item">
+                                        <label>RSI Lower</label>
+                                        <input type="number" id="backtestPageRSIOversold" value="40" min="0" max="50" placeholder="40">
+                                    </div>
+                                    <div class="param-item">
+                                        <label style="display: flex; align-items: center; gap: 8px;">
+                                            <input type="checkbox" id="backtestPageNoEntryWindow" style="width: auto; margin: 0;" checked>
+                                            Block Entries (11:00-14:00 IST)
+                                        </label>
+                                    </div>
+                                </div>
+                                <p id="backtestPageRsiHint" style="font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4;">
+                                    💡 <strong>RSI Filter:</strong> Trades execute only when RSI ≤ Oversold OR RSI ≥ Overbought. 
+                                    Trades blocked when RSI is between oversold and overbought levels.
+                                </p>
+                            </div>
+                            <button class="btn-primary" onclick="runBacktestFromPage()" style="padding: 12px 24px; font-size: 16px;">
+                                📊 Run Backtest
+                            </button>
+                            <div id="backtestPageLoading" style="display: none; margin-top: 16px; padding: 16px; background: #f0f9ff; border-radius: 8px; color: #0369a1;">
+                                ⏳ Backtest chal raha hai... (data load hone mein kuch second lag sakte hain)
+                            </div>
+                            <div id="backtestPageResults" style="margin-top: 24px; padding: 24px; background: linear-gradient(135deg, #f0f9ff 0%, #ffffff 100%); border-radius: 12px; border: 2px solid #3b82f6; display: none;">
+                                <h4 id="backtestPageTitle" style="font-size: 16px; font-weight: 700; color: #374151; margin-bottom: 15px;">📊 Backtest Results</h4>
+                                <div id="backtestPageStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; margin-bottom: 20px;"></div>
+                                <div id="backtestPageTrades" style="max-height: 360px; overflow-y: auto;"></div>
+                                <div class="backtest-reports-section">
+                                    <h5 class="backtest-reports-title">📑 Backtest Reports History</h5>
+                                    <div class="backtest-reports-actions">
+                                        <button class="backtest-reports-download-btn" onclick="downloadBacktestReports()">⬇️ Download Excel</button>
+                                    </div>
+                                    <div id="backtestPageReportsHistory" class="backtest-reports-list">
+                                        <div class="backtest-report-empty">Run backtest to generate report history.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let candlestickSeries = null;
+        let emaSeries = {
+            ema9: null,
+            ema21: null,
+            ema50: null
+        };
+
+        // Custom EMA Strategy State
+        let customEMAStrategy = {
+            active: false,
+            lastState: null, // 'above' or 'below'
+            emaData: [],
+            intervalId: null
+        };
+
+        /** Live Delta: SL/Target in points — poll mark vs entry and reduce_only close */
+        let strategySlTpWatch = {
+            active: false,
+            symbol: null,
+            slPoints: 400,
+            targetPoints: 800,
+            closing: false
+        };
+        let slTpMonitorIntervalId = null;
+
+        function parseDeltaPositionsPayload(data) {
+            if (!data || !data.success) return [];
+            return Array.isArray(data.data)
+                ? data.data
+                : (Array.isArray(data.data?.result) ? data.data.result : []);
+        }
+
+        function normalizeSymKey(s) {
+            return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        }
+
+        function deltaPositionMatchesSymbol(pos, strategySymbol) {
+            const ps = pos.symbol || pos.product_symbol || pos.underlying_asset_symbol || pos.product_id || '';
+            const a = normalizeSymKey(ps);
+            const b = normalizeSymKey(strategySymbol);
+            if (!a || !b) return false;
+            return a === b || a.includes(b) || b.includes(a);
+        }
+
+        function registerStrategySlTpWatch(symbol, slPoints, targetPoints) {
+            const auto = document.getElementById('customStrategySlTpAuto');
+            if (!auto || !auto.checked) return;
+            if (slTpMonitorIntervalId) {
+                clearInterval(slTpMonitorIntervalId);
+                slTpMonitorIntervalId = null;
+            }
+            strategySlTpWatch = {
+                active: true,
+                symbol: symbol,
+                slPoints: Math.max(1, Number(slPoints) || 400),
+                targetPoints: Math.max(1, Number(targetPoints) || 800),
+                closing: false
+            };
+            addToStrategyLog(`🛡️ SL/Target watch ON: ${strategySlTpWatch.slPoints} / ${strategySlTpWatch.targetPoints} points (mark price check ~10s)`);
+            startSlTpMonitor();
+            setTimeout(function() { pollSlTpExit(); }, 2500);
+        }
+
+        function clearStrategySlTpWatch(reason) {
+            strategySlTpWatch.active = false;
+            strategySlTpWatch.symbol = null;
+            strategySlTpWatch.closing = false;
+            if (reason) addToStrategyLog(reason);
+            if (slTpMonitorIntervalId) {
+                clearInterval(slTpMonitorIntervalId);
+                slTpMonitorIntervalId = null;
+            }
+        }
+
+        function startSlTpMonitor() {
+            if (slTpMonitorIntervalId) return;
+            slTpMonitorIntervalId = setInterval(function() {
+                pollSlTpExit();
+            }, 10000);
+        }
+
+        async function closeDeltaPositionReduceOnly(symbol, closeSide, quantity) {
+            const response = await fetch('/api/delta/place-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    symbol: symbol,
+                    side: closeSide,
+                    order_type: 'market',
+                    quantity: quantity,
+                    reduce_only: true
+                })
+            });
+            return response.json();
+        }
+
+        async function pollSlTpExit() {
+            if (!strategySlTpWatch.active || strategySlTpWatch.closing) return;
+            const sym = strategySlTpWatch.symbol;
+            if (!sym) return;
+
+            try {
+                const res = await fetch('/api/delta/positions');
+                const data = await res.json();
+                const positions = parseDeltaPositionsPayload(data);
+                const pos = positions.find(function(p) { return deltaPositionMatchesSymbol(p, sym); });
+
+                const rawSize = pos ? parseFloat(pos.size) : 0;
+                const sizeAbs = Math.abs(rawSize);
+                if (!pos || !Number.isFinite(sizeAbs) || sizeAbs < 1e-12) {
+                    clearStrategySlTpWatch('📍 Position band / flat — SL/Target watch hata diya.');
+                    loadPositions();
+                    return;
+                }
+
+                const entry = parseFloat(pos.entry_price);
+                const mark = parseFloat(pos.mark_price != null ? pos.mark_price : (pos.last_price != null ? pos.last_price : entry));
+                if (!Number.isFinite(entry) || !Number.isFinite(mark)) return;
+
+                const slP = strategySlTpWatch.slPoints;
+                const tpP = strategySlTpWatch.targetPoints;
+                const isLong = rawSize > 0;
+
+                let slPrice, targetPrice, hit = null;
+                if (isLong) {
+                    slPrice = entry - slP;
+                    targetPrice = entry + tpP;
+                    if (mark <= slPrice) hit = 'SL_HIT';
+                    else if (mark >= targetPrice) hit = 'TARGET_HIT';
+                } else {
+                    slPrice = entry + slP;
+                    targetPrice = entry - tpP;
+                    if (mark >= slPrice) hit = 'SL_HIT';
+                    else if (mark <= targetPrice) hit = 'TARGET_HIT';
+                }
+
+                if (!hit) return;
+
+                strategySlTpWatch.closing = true;
+                const closeSide = isLong ? 'sell' : 'buy';
+                addToStrategyLog(`⚡ ${hit === 'SL_HIT' ? 'Stop Loss' : 'Target'} — closing ${sym} @ mark ~${mark.toFixed(2)} (entry ${entry.toFixed(2)})`);
+
+                const closeData = await closeDeltaPositionReduceOnly(sym, closeSide, sizeAbs);
+                if (closeData.success) {
+                    addToStrategyLog(`✅ Position closed (${hit === 'SL_HIT' ? 'SL' : 'Target'}) — reduce_only market`);
+                    clearStrategySlTpWatch(null);
+                    loadPositions();
+                    loadOrders();
+                } else {
+                    addToStrategyLog(`❌ Auto close failed: ${closeData.error || 'Unknown'}`);
+                    strategySlTpWatch.closing = false;
+                }
+            } catch (e) {
+                console.error('pollSlTpExit', e);
+                strategySlTpWatch.closing = false;
+            }
+        }
+
+        function isInNoEntryWindowIST(date = new Date()) {
+            const parts = new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Kolkata',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }).formatToParts(date);
+            const hour = parseInt(parts.find((p) => p.type === 'hour')?.value || '0', 10);
+            const minute = parseInt(parts.find((p) => p.type === 'minute')?.value || '0', 10);
+            const totalMinutes = hour * 60 + minute;
+            return totalMinutes >= (11 * 60) && totalMinutes < (14 * 60);
+        }
+
+        function initChart() {
+            const chartContainer = document.getElementById('chart');
+            
+            if (!chartContainer) {
+                console.error('Chart container not found!');
+                return;
+            }
+            
+            if (typeof LightweightCharts === 'undefined') {
+                throw new Error('LightweightCharts library not loaded!');
+            }
+            
+            chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 450,
+                layout: {
+                    background: { type: 'solid', color: '#ffffff' },
+                    textColor: '#374151',
+                    fontSize: 12,
+                    fontFamily: 'Inter, -apple-system, sans-serif',
+                },
+                grid: {
+                    vertLines: { 
+                        color: '#f3f4f6',
+                        style: 1,
+                        visible: true,
+                    },
+                    horzLines: { 
+                        color: '#f3f4f6',
+                        style: 1,
+                        visible: true,
+                    },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                    vertLine: {
+                        color: '#667eea',
+                        width: 1,
+                        style: 2,
+                    },
+                    horzLine: {
+                        color: '#667eea',
+                        width: 1,
+                        style: 2,
+                    },
+                },
+                rightPriceScale: {
+                    borderColor: '#e5e7eb',
+                    scaleMargins: {
+                        top: 0.1,
+                        bottom: 0.1,
+                    },
+                },
+                timeScale: {
+                    borderColor: '#e5e7eb',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+
+            candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#10b981',
+                downColor: '#ef4444',
+                borderVisible: false,
+                wickUpColor: '#10b981',
+                wickDownColor: '#ef4444',
+                priceFormat: {
+                    type: 'price',
+                    precision: 2,
+                    minMove: 0.01,
+                },
+            });
+
+            emaSeries.ema9 = chart.addLineSeries({
+                color: '#f59e0b',
+                lineWidth: 2.5,
+                title: 'EMA 9',
+                priceFormat: {
+                    type: 'price',
+                    precision: 2,
+                    minMove: 0.01,
+                },
+            });
+
+            emaSeries.ema21 = chart.addLineSeries({
+                color: '#3b82f6',
+                lineWidth: 2.5,
+                title: 'EMA 21',
+                priceFormat: {
+                    type: 'price',
+                    precision: 2,
+                    minMove: 0.01,
+                },
+            });
+
+            emaSeries.ema50 = chart.addLineSeries({
+                color: '#8b5cf6',
+                lineWidth: 2.5,
+                title: 'EMA 50',
+                priceFormat: {
+                    type: 'price',
+                    precision: 2,
+                    minMove: 0.01,
+                },
+            });
+
+            window.addEventListener('resize', () => {
+                if (chart) {
+                    chart.applyOptions({ width: chartContainer.clientWidth });
+                }
+            });
+        }
+
+        async function loadData() {
+            const symbol = document.getElementById('symbol').value;
+            const interval = document.getElementById('interval').value;
+            const limit = document.getElementById('limit').value;
+
+            const loadingEl = document.getElementById('loading');
+            const errorEl = document.getElementById('error');
+            const loadBtn = document.getElementById('loadBtn');
+            const statusEl = document.getElementById('status');
+
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+            loadBtn.disabled = true;
+            statusEl.textContent = `Loading data for ${symbol}...`;
+
+            try {
+                if (!chart || !candlestickSeries) {
+                    initChart();
+                }
+
+                const response = await fetch(
+                    `/api/candles?symbol=${symbol}&interval=${interval}&limit=${limit}&ema_periods=9,21,50`
+                );
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Data fetch nahi hua');
+                }
+
+                if (!data.candles || data.candles.length === 0) {
+                    throw new Error('No candle data received');
+                }
+
+                const candles = data.candles.map(c => ({
+                    time: Math.floor(c.time / 1000),
+                    open: parseFloat(c.open),
+                    high: parseFloat(c.high),
+                    low: parseFloat(c.low),
+                    close: parseFloat(c.close),
+                })).filter(c => c.open && c.high && c.low && c.close);
+
+                if (candles.length === 0) {
+                    throw new Error("No valid candle data received");
+                }
+
+                candlestickSeries.setData(candles);
+
+                const ema9Checked = document.getElementById('ema9').checked;
+                const ema21Checked = document.getElementById('ema21').checked;
+                const ema50Checked = document.getElementById('ema50').checked;
+
+                if (ema9Checked && emaSeries.ema9) {
+                    const ema9Data = data.candles
+                        .filter(c => c.ema_9 !== null && c.ema_9 !== undefined)
+                        .map(c => ({
+                            time: Math.floor(c.time / 1000),
+                            value: parseFloat(c.ema_9),
+                        }));
+                    if (ema9Data.length > 0) {
+                        emaSeries.ema9.setData(ema9Data);
+                        emaSeries.ema9.applyOptions({ visible: true });
+                    }
+                } else if (emaSeries.ema9) {
+                    emaSeries.ema9.applyOptions({ visible: false });
+                }
+
+                if (ema21Checked && emaSeries.ema21) {
+                    const ema21Data = data.candles
+                        .filter(c => c.ema_21 !== null && c.ema_21 !== undefined)
+                        .map(c => ({
+                            time: Math.floor(c.time / 1000),
+                            value: parseFloat(c.ema_21),
+                        }));
+                    if (ema21Data.length > 0) {
+                        emaSeries.ema21.setData(ema21Data);
+                        emaSeries.ema21.applyOptions({ visible: true });
+                    }
+                } else if (emaSeries.ema21) {
+                    emaSeries.ema21.applyOptions({ visible: false });
+                }
+
+                if (ema50Checked && emaSeries.ema50) {
+                    const ema50Data = data.candles
+                        .filter(c => c.ema_50 !== null && c.ema_50 !== undefined)
+                        .map(c => ({
+                            time: Math.floor(c.time / 1000),
+                            value: parseFloat(c.ema_50),
+                        }));
+                    if (ema50Data.length > 0) {
+                        emaSeries.ema50.setData(ema50Data);
+                        emaSeries.ema50.applyOptions({ visible: true });
+                    }
+                } else if (emaSeries.ema50) {
+                    emaSeries.ema50.applyOptions({ visible: false });
+                }
+
+                await loadMarketInfo(symbol);
+
+                // Store EMA data for custom strategy
+                if (customEMAStrategy.active) {
+                    customEMAStrategy.emaData = data.candles.map(c => ({
+                        time: c.time,
+                        ema9: c.ema_9 ? parseFloat(c.ema_9) : null,
+                        ema21: c.ema_21 ? parseFloat(c.ema_21) : null,
+                        ema50: c.ema_50 ? parseFloat(c.ema_50) : null,
+                        close: parseFloat(c.close)
+                    }));
+                    
+                    // Check for crossovers if strategy is active
+                    const autoTrade = document.getElementById('customAutoTrade').value === 'true';
+                    checkEMACrossovers(autoTrade);
+                }
+
+                statusEl.textContent = `✅ ${data.total_candles} candles loaded successfully | ${symbol} | ${interval}`;
+                statusEl.style.color = '#4ade80';
+
+            } catch (error) {
+                console.error('Error:', error);
+                errorEl.textContent = `❌ Error: ${error.message}`;
+                errorEl.style.display = 'block';
+                statusEl.textContent = `❌ Error: ${error.message}`;
+                statusEl.style.color = '#ef5350';
+            } finally {
+                loadingEl.style.display = 'none';
+                loadBtn.disabled = false;
+            }
+        }
+
+        async function loadMarketInfo(symbol) {
+            try {
+                const response = await fetch(`/api/market-info?symbol=${symbol}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('currentPrice').textContent = `$${data.current_price.toFixed(2)}`;
+                    
+                    const change = data.change_24h;
+                    const changeEl = document.getElementById('change24h');
+                    changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+                    changeEl.className = `info-value ${change >= 0 ? 'positive' : 'negative'}`;
+                    
+                    document.getElementById('high24h').textContent = `$${data.high_24h.toFixed(2)}`;
+                    document.getElementById('low24h').textContent = `$${data.low_24h.toFixed(2)}`;
+                    
+                    document.getElementById('marketInfo').style.display = 'flex';
+                }
+            } catch (error) {
+                console.error('Market info error:', error);
+            }
+        }
+
+        document.getElementById('ema9').addEventListener('change', () => {
+            if (candlestickSeries) {
+                loadData();
+            }
+        });
+
+        document.getElementById('ema21').addEventListener('change', () => {
+            if (candlestickSeries) {
+                loadData();
+            }
+        });
+
+        document.getElementById('ema50').addEventListener('change', () => {
+            if (candlestickSeries) {
+                loadData();
+            }
+        });
+
+        function loadTradeExchangeAccounts() {
+            const status = document.getElementById('tradeAccountStatus');
+            if (status) {
+                status.textContent = 'Orders / positions use built-in server keys (backend_api.py — API_KEY / SECRET_KEY).';
+                status.style.color = '#065f46';
+            }
+        }
+
+        // Page Navigation
+        function showPage(pageName) {
+            // Hide all pages
+            document.querySelectorAll('.page').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // Remove active class from all menu items
+            document.querySelectorAll('.menu-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Show selected page
+            const pageElement = document.getElementById(pageName + 'Page');
+            if (pageElement) {
+                pageElement.classList.add('active');
+            }
+            
+            // Activate selected menu item
+            const menuElement = document.getElementById('menu' + pageName.charAt(0).toUpperCase() + pageName.slice(1));
+            if (menuElement) {
+                menuElement.classList.add('active');
+            }
+            
+            // Initialize chart if on home page
+            if (pageName === 'home' && !chart) {
+                setTimeout(() => {
+                    if (typeof LightweightCharts !== 'undefined') {
+                        try {
+                            initChart();
+                        } catch (error) {
+                            console.error('Chart initialization error:', error);
+                        }
+                    }
+                }, 100);
+            }
+        }
+
+        // Trading Functions
+        async function placeOrder(side) {
+            const symbol = document.getElementById('tradeSymbol').value;
+            const orderType = document.getElementById('orderType').value;
+            const quantity = parseFloat(document.getElementById('tradeQuantity').value);
+            const price = document.getElementById('tradePrice').value ? parseFloat(document.getElementById('tradePrice').value) : null;
+            if (!quantity || quantity <= 0) {
+                alert('Please enter a valid quantity');
+                return;
+            }
+
+            if (orderType === 'limit' && (!price || price <= 0)) {
+                alert('Please enter a valid price for limit order');
+                return;
+            }
+
+            const confirmMsg = `Confirm ${side.toUpperCase()} order?\n\nSymbol: ${symbol}\nType: ${orderType}\nQuantity: ${quantity}\n${price ? `Price: $${price}` : 'Market Price'}`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/place-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        side: side,
+                        order_type: orderType,
+                        quantity: quantity,
+                        price: price
+                    })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(`✅ ${side.toUpperCase()} order placed successfully!`);
+                    // Refresh orders and positions
+                    loadOrders();
+                    loadPositions();
+                    updateActivity(side, symbol, quantity, price);
+                } else {
+                    alert(`❌ Order failed: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Order error:', error);
+                alert(`❌ Order error: ${error.message}`);
+                // In demo mode, still update UI
+                updateActivity(side, symbol, quantity, price);
+            }
+        }
+
+        function updateActivity(side, symbol, quantity, price) {
+            const activityList = document.querySelector('.activity-list');
+            if (activityList) {
+                const newActivity = document.createElement('li');
+                newActivity.className = 'activity-item';
+                const sideClass = side === 'buy' ? 'buy' : 'sell';
+                const sideIcon = side === 'buy' ? '📈' : '📉';
+                const priceText = price ? `@ $${price}` : 'Market';
+                newActivity.innerHTML = `
+                    <div class="activity-icon ${sideClass}">${sideIcon}</div>
+                    <div class="activity-content">
+                        <div class="activity-title">${side.toUpperCase()} Order - ${symbol}</div>
+                        <div class="activity-time">Just now</div>
+                    </div>
+                `;
+                activityList.insertBefore(newActivity, activityList.firstChild);
+                
+                // Keep only last 10 activities
+                while (activityList.children.length > 10) {
+                    activityList.removeChild(activityList.lastChild);
+                }
+            }
+        }
+
+        async function loadOrders() {
+            try {
+                let response = await fetch('/api/orders').catch(() => null);
+                if (!response || !response.ok) {
+                    response = await fetch('/api/delta/orders');
+                }
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    const orders = data.data;
+                    const openOrders = orders.filter(o => {
+                        const s = String(o.status || '').toLowerCase();
+                        return ['pending', 'open', 'submitted', 'new', 'partially_filled'].includes(s);
+                    });
+                    const closedOrders = orders.filter(o => {
+                        const s = String(o.status || '').toLowerCase();
+                        return ['filled', 'closed', 'cancelled', 'rejected', 'canceled'].includes(s);
+                    }).slice(0, 5);
+                    
+                    // Update open orders display
+                    const openOrdersDiv = document.getElementById('openOrders');
+                    if (openOrdersDiv) {
+                        if (openOrders.length > 0) {
+                            openOrdersDiv.innerHTML = openOrders.map(order => `
+                                <div class="order-item">
+                                    <div class="order-info">
+                                        <div class="order-symbol">${order.symbol || 'N/A'}</div>
+                                        <div class="order-details">${order.order_type || 'market'} ${order.side} | Qty: ${order.quantity || order.size || 0} | Price: ${order.price || order.limit_price || 'Market'}</div>
+                                        <div class="order-status">${order.status || 'Pending'}</div>
+                                    </div>
+                                    <div>
+                                        <span class="order-side ${order.side}">${order.side.toUpperCase()}</span>
+                                    </div>
+                                </div>
+                            `).join('');
+                        } else {
+                            openOrdersDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #9ca3af;">No open orders</div>';
+                        }
+                    }
+                    
+                    // Update order history
+                    const orderHistoryDiv = document.getElementById('orderHistory');
+                    if (orderHistoryDiv) {
+                        if (closedOrders.length > 0) {
+                            orderHistoryDiv.innerHTML = closedOrders.map(order => {
+                                const timeAgo = order.timestamp ? new Date(order.timestamp).toLocaleString() : 'Recently';
+                                return `
+                                    <div class="order-item">
+                                        <div class="order-info">
+                                            <div class="order-symbol">${order.symbol || 'N/A'}</div>
+                                            <div class="order-details">${order.order_type || 'market'} ${order.side} | Qty: ${order.quantity || order.size || 0} | Executed</div>
+                                            <div class="order-status">${timeAgo}</div>
+                                        </div>
+                                        <div>
+                                            <span class="order-side ${order.side}">${order.side.toUpperCase()}</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('');
+                        } else {
+                            orderHistoryDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #9ca3af;">No order history</div>';
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading orders:', error);
+            }
+        }
+
+        async function loadPositions() {
+            const positionsGrid = document.getElementById('positionsGrid');
+            const positionsError = document.getElementById('positionsError');
+            try {
+                const response = await fetch('/api/delta/positions');
+                const data = await response.json();
+                
+                if (positionsError) {
+                    positionsError.style.display = 'none';
+                    positionsError.textContent = '';
+                }
+                const positionsArray = Array.isArray(data.data)
+                    ? data.data
+                    : (Array.isArray(data.data?.result) ? data.data.result : []);
+                if (data.success && positionsArray) {
+                    if (positionsGrid && positionsArray.length > 0) {
+                        positionsGrid.innerHTML = positionsArray.map(position => {
+                            const pnl = position.unrealized_pnl || 0;
+                            const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+                            return `
+                                <div class="position-card">
+                                    <div class="position-header">
+                                        <span class="position-symbol">${position.symbol || 'N/A'}</span>
+                                        <span class="position-pnl ${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>
+                                    </div>
+                                    <div class="position-details">
+                                        Size: ${position.size || 0} | Entry: $${position.entry_price || 0} | Current: $${position.mark_price || 0}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    } else if (positionsGrid) {
+                        positionsGrid.innerHTML = '<div class="position-card" style="opacity:0.8">No open positions</div>';
+                    }
+                } else {
+                    const msg = data.error || 'Positions load nahi hui';
+                    if (positionsError) {
+                        positionsError.textContent = '⚠️ ' + msg;
+                        positionsError.style.display = 'block';
+                    }
+                    if (positionsGrid) positionsGrid.innerHTML = '';
+                }
+            } catch (error) {
+                console.error('Error loading positions:', error);
+                if (positionsError) {
+                    positionsError.textContent = '⚠️ Network error. Server check karein.';
+                    positionsError.style.display = 'block';
+                }
+                if (positionsGrid) positionsGrid.innerHTML = '';
+            }
+        }
+
+        // Update price field visibility based on order type
+        document.addEventListener('DOMContentLoaded', () => {
+            const orderTypeSelect = document.getElementById('orderType');
+            const priceGroup = document.getElementById('priceGroup');
+            
+            if (orderTypeSelect && priceGroup) {
+                orderTypeSelect.addEventListener('change', () => {
+                    if (orderTypeSelect.value === 'market') {
+                        priceGroup.style.display = 'none';
+                        document.getElementById('tradePrice').value = '';
+                    } else {
+                        priceGroup.style.display = 'flex';
+                    }
+                });
+            }
+
+            // Sync trade symbol with chart symbol
+            const chartSymbol = document.getElementById('symbol');
+            const tradeSymbol = document.getElementById('tradeSymbol');
+            if (chartSymbol && tradeSymbol) {
+                chartSymbol.addEventListener('change', () => {
+                    tradeSymbol.value = chartSymbol.value;
+                });
+            }
+            const tradeExchangeAccount = document.getElementById('tradeExchangeAccount');
+            if (tradeExchangeAccount) {
+                tradeExchangeAccount.addEventListener('change', () => {
+                    loadOrders();
+                    loadPositions();
+                });
+            }
+
+            // Lots change: recalc backtest values (sidebar)
+            const backtestLotsEl = document.getElementById('backtestLots');
+            if (backtestLotsEl) {
+                backtestLotsEl.addEventListener('input', recalcBacktestLotsSidebar);
+                backtestLotsEl.addEventListener('change', recalcBacktestLotsSidebar);
+            }
+            // Lots change: recalc backtest values (backtest page)
+            const backtestPageLotsEl = document.getElementById('backtestPageLots');
+            if (backtestPageLotsEl) {
+                backtestPageLotsEl.addEventListener('input', recalcBacktestLotsPage);
+                backtestPageLotsEl.addEventListener('change', recalcBacktestLotsPage);
+            }
+        });
+
+        // Custom EMA Strategy Functions
+        function activateCustomEMAStrategy() {
+            const symbol = document.getElementById('customStrategySymbol').value;
+            const autoTrade = document.getElementById('customAutoTrade').value === 'true';
+            const useNoEntryWindow = document.getElementById('customNoEntryWindow')?.checked ?? true;
+            
+            customEMAStrategy.active = true;
+            customEMAStrategy.lastState = null;
+            customEMAStrategy.emaData = [];
+            
+            document.getElementById('customStrategyStatus').textContent = `Active - ${symbol} (${autoTrade ? 'Auto Trade ON' : 'Signal Only'})`;
+            document.getElementById('customStrategyStatus').style.color = '#10b981';
+            
+            // Show details section
+            document.getElementById('emaDetailsSection').style.display = 'block';
+            addToStrategyLog(`✅ Strategy Activated - Symbol: ${symbol}, Auto Trade: ${autoTrade ? 'ON' : 'OFF'}, No-entry window: ${useNoEntryWindow ? 'ON' : 'OFF'}`);
+            
+            // Start monitoring
+            startCustomEMAMonitoring(autoTrade);
+            
+            alert(`✅ Custom EMA Strategy activated!\n\nSymbol: ${symbol}\nAuto Trade: ${autoTrade ? 'ON' : 'OFF'}\n\nStrategy ab EMA crossovers monitor karegi.`);
+        }
+
+        function deactivateCustomEMAStrategy() {
+            customEMAStrategy.active = false;
+            if (customEMAStrategy.intervalId) {
+                clearInterval(customEMAStrategy.intervalId);
+                customEMAStrategy.intervalId = null;
+            }
+            
+            document.getElementById('customStrategyStatus').textContent = 'Inactive';
+            document.getElementById('customStrategyStatus').style.color = '#6b7280';
+            
+            // Hide details section
+            document.getElementById('emaDetailsSection').style.display = 'none';
+            addToStrategyLog('⏸️ Strategy Deactivated');
+            
+            alert('⏸️ Custom EMA Strategy deactivated');
+        }
+
+        function startCustomEMAMonitoring(autoTrade) {
+            // Check for crossovers every 5 minutes (since we're using 5 min timeframe)
+            customEMAStrategy.intervalId = setInterval(async () => {
+                if (!customEMAStrategy.active) {
+                    clearInterval(customEMAStrategy.intervalId);
+                    return;
+                }
+                
+                await checkEMACrossovers(autoTrade);
+            }, 300000); // Check every 5 minutes (300000 ms)
+            
+            // Also check immediately
+            checkEMACrossovers(autoTrade);
+        }
+
+        async function checkEMACrossovers(autoTrade) {
+            try {
+                const symbol = document.getElementById('customStrategySymbol').value;
+                const ema9 = parseInt(document.getElementById('customEma9').value) || 9;
+                const ema21 = parseInt(document.getElementById('customEma21').value) || 21;
+                const ema50 = parseInt(document.getElementById('customEma50').value) || 50;
+                
+                // Use 5 minute timeframe with custom EMA periods
+                const response = await fetch(
+                    `/api/candles?symbol=${symbol}&interval=5m&limit=100&ema_periods=${ema9},${ema21},${ema50}`
+                );
+                
+                const data = await response.json();
+                if (!data.success || !data.candles || data.candles.length < 2) {
+                    addToStrategyLog(`⚠️ Insufficient data: ${data.candles ? data.candles.length : 0} candles`);
+                    return;
+                }
+                
+                // Get last 2 candles for comparison
+                const candles = data.candles.slice(-2);
+                const current = candles[candles.length - 1];
+                const previous = candles[candles.length - 2];
+                
+                // Get custom EMA periods first
+                const ema9Period = parseInt(document.getElementById('customEma9').value) || 9;
+                const ema21Period = parseInt(document.getElementById('customEma21').value) || 21;
+                const ema50Period = parseInt(document.getElementById('customEma50').value) || 50;
+                
+                // Get EMA values using custom periods (try both formats: ema_9 and ema_9)
+                const currentEma9 = parseFloat(current[`ema_${ema9Period}`] || current['ema_9'] || 0);
+                const currentEma21 = parseFloat(current[`ema_${ema21Period}`] || current['ema_21'] || 0);
+                const currentEma50 = parseFloat(current[`ema_${ema50Period}`] || current['ema_50'] || 0);
+                const currentPrice = parseFloat(current.close);
+                
+                const prevEma9 = parseFloat(previous[`ema_${ema9Period}`] || previous['ema_9'] || 0);
+                const prevEma21 = parseFloat(previous[`ema_${ema21Period}`] || previous['ema_21'] || 0);
+                const prevEma50 = parseFloat(previous[`ema_${ema50Period}`] || previous['ema_50'] || 0);
+                
+                // Check if we have valid EMA values
+                if (!currentEma9 || !currentEma21 || !currentEma50 ||
+                    !prevEma9 || !prevEma21 || !prevEma50) {
+                    addToStrategyLog(`⚠️ Missing EMA values: EMA${ema9Period}=${currentEma9}, EMA${ema21Period}=${currentEma21}, EMA${ema50Period}=${currentEma50}`);
+                    return;
+                }
+                
+                // Update EMA values display
+                document.getElementById('ema9Value').textContent = currentEma9.toFixed(2);
+                document.getElementById('ema21Value').textContent = currentEma21.toFixed(2);
+                document.getElementById('ema50Value').textContent = currentEma50.toFixed(2);
+                document.getElementById('currentPriceValue').textContent = '$' + currentPrice.toFixed(2);
+                
+                // Update labels to show custom periods
+                const ema9Label = document.getElementById('ema9Label');
+                const ema21Label = document.getElementById('ema21Label');
+                const ema50Label = document.getElementById('ema50Label');
+                const ema9vs50Label = document.getElementById('ema9vs50Label');
+                const ema21vs50Label = document.getElementById('ema21vs50Label');
+                
+                if (ema9Label) ema9Label.textContent = `EMA ${ema9Period}`;
+                if (ema21Label) ema21Label.textContent = `EMA ${ema21Period}`;
+                if (ema50Label) ema50Label.textContent = `EMA ${ema50Period}`;
+                if (ema9vs50Label) ema9vs50Label.innerHTML = `EMA ${ema9Period} vs EMA ${ema50Period}: <span id="ema9vs50" style="font-weight: 600;">-</span>`;
+                if (ema21vs50Label) ema21vs50Label.innerHTML = `EMA ${ema21Period} vs EMA ${ema50Period}: <span id="ema21vs50" style="font-weight: 600;">-</span>`;
+                
+                // Calculate differences
+                const ema9Diff = currentEma9 - currentEma50;
+                const ema21Diff = currentEma21 - currentEma50;
+                
+                // Update comparison display
+                const ema9vs50 = ema9Diff > 0 ? 
+                    `ABOVE (+${ema9Diff.toFixed(2)})` : 
+                    `BELOW (${ema9Diff.toFixed(2)})`;
+                const ema21vs50 = ema21Diff > 0 ? 
+                    `ABOVE (+${ema21Diff.toFixed(2)})` : 
+                    `BELOW (${ema21Diff.toFixed(2)})`;
+                
+                document.getElementById('ema9vs50').textContent = ema9vs50;
+                document.getElementById('ema9vs50').style.color = ema9Diff > 0 ? '#10b981' : '#ef4444';
+                
+                document.getElementById('ema21vs50').textContent = ema21vs50;
+                document.getElementById('ema21vs50').style.color = ema21Diff > 0 ? '#10b981' : '#ef4444';
+                
+                // Check if both EMA 9 and EMA 21 are above EMA 50 (current)
+                const bothAboveNow = currentEma9 > currentEma50 && currentEma21 > currentEma50;
+                const bothBelowNow = currentEma9 < currentEma50 && currentEma21 < currentEma50;
+                
+                // Check previous state
+                const bothAbovePrev = prevEma9 > prevEma50 && prevEma21 > prevEma50;
+                const bothBelowPrev = prevEma9 < prevEma50 && prevEma21 < prevEma50;
+                
+                // Determine current state
+                let currentStateText = '';
+                let currentStateColor = '#6b7280';
+                
+                if (bothAboveNow) {
+                    currentStateText = `BOTH ABOVE EMA ${ema50Period} (Bullish)`;
+                    currentStateColor = '#10b981';
+                } else if (bothBelowNow) {
+                    currentStateText = `BOTH BELOW EMA ${ema50Period} (Bearish)`;
+                    currentStateColor = '#ef4444';
+                } else {
+                    currentStateText = `MIXED (EMA ${ema9Period} and ${ema21Period} on different sides)`;
+                    currentStateColor = '#f59e0b';
+                }
+                
+                document.getElementById('currentState').textContent = currentStateText;
+                document.getElementById('currentState').style.color = currentStateColor;
+                
+                // Log current status
+                const timestamp = new Date().toLocaleTimeString();
+                addToStrategyLog(`[${timestamp}] Checking: EMA${ema9Period}=${currentEma9.toFixed(2)}, EMA${ema21Period}=${currentEma21.toFixed(2)}, EMA${ema50Period}=${currentEma50.toFixed(2)}`);
+                addToStrategyLog(`[${timestamp}] State: ${currentStateText}`);
+
+                const useNoEntryWindow = document.getElementById('customNoEntryWindow')?.checked ?? true;
+                if (useNoEntryWindow && isInNoEntryWindowIST()) {
+                    addToStrategyLog(`[${timestamp}] ⏸️ No-entry window (11:00 AM to 2:00 PM IST) active. New trade skipped.`);
+                    return;
+                }
+                
+                // Detect cross above: both were below, now both are above
+                if (!bothAbovePrev && bothAboveNow && customEMAStrategy.lastState !== 'above') {
+                    customEMAStrategy.lastState = 'above';
+                    const signal = 'BUY';
+                    
+                    const logMsg = `🎯 ${signal} SIGNAL DETECTED! EMA ${ema9Period} (${currentEma9.toFixed(2)}) and EMA ${ema21Period} (${currentEma21.toFixed(2)}) crossed above EMA ${ema50Period} (${currentEma50.toFixed(2)})`;
+                    console.log(logMsg);
+                    addToStrategyLog(logMsg);
+                    
+                    if (autoTrade) {
+                        addToStrategyLog(`🔄 Auto Trade: Placing ${signal} order...`);
+                        await executeStrategyOrder(symbol, 'buy', signal);
+                    } else {
+                        showStrategySignal(symbol, signal, `EMA ${ema9Period} & ${ema21Period} crossed above EMA ${ema50Period}`);
+                        addToStrategyLog(`📢 Signal Only Mode: ${signal} signal generated (no auto trade)`);
+                    }
+                }
+                
+                // Detect cross down: both were above, now both are below
+                if (!bothBelowPrev && bothBelowNow && customEMAStrategy.lastState !== 'below') {
+                    customEMAStrategy.lastState = 'below';
+                    const signal = 'SELL';
+                    
+                    const logMsg = `🎯 ${signal} SIGNAL DETECTED! EMA ${ema9Period} (${currentEma9.toFixed(2)}) and EMA ${ema21Period} (${currentEma21.toFixed(2)}) crossed below EMA ${ema50Period} (${currentEma50.toFixed(2)})`;
+                    console.log(logMsg);
+                    addToStrategyLog(logMsg);
+                    
+                    if (autoTrade) {
+                        addToStrategyLog(`🔄 Auto Trade: Placing ${signal} order...`);
+                        await executeStrategyOrder(symbol, 'sell', signal);
+                    } else {
+                        showStrategySignal(symbol, signal, `EMA ${ema9Period} & ${ema21Period} crossed below EMA ${ema50Period}`);
+                        addToStrategyLog(`📢 Signal Only Mode: ${signal} signal generated (no auto trade)`);
+                    }
+                }
+                
+            } catch (error) {
+                console.error('Error checking EMA crossovers:', error);
+                addToStrategyLog(`❌ Error: ${error.message}`);
+            }
+        }
+
+        async function executeStrategyOrder(symbol, side, signal) {
+            const quantity = parseFloat(document.getElementById('customStrategyQty').value) || 0.001;
+            const slPoints = parseFloat(document.getElementById('customStrategySL').value) || 400;
+            const targetPoints = parseFloat(document.getElementById('customStrategyTarget').value) || 800;
+            
+            // Get current price for SL/Target calculation
+            try {
+                const priceResponse = await fetch(`/api/market-info?symbol=${symbol}`);
+                const priceData = await priceResponse.json();
+                const currentPrice = priceData.current_price;
+                
+                let entryPrice = currentPrice;
+                let slPrice, targetPrice;
+                
+                if (side === 'buy') {
+                    slPrice = entryPrice - slPoints;
+                    targetPrice = entryPrice + targetPoints;
+                } else {
+                    slPrice = entryPrice + slPoints;
+                    targetPrice = entryPrice - targetPoints;
+                }
+                
+                addToStrategyLog(`📤 Placing ${side.toUpperCase()} order: ${quantity} ${symbol}`);
+                addToStrategyLog(`💰 Entry: ${entryPrice.toFixed(2)}, SL: ${slPrice.toFixed(2)}, Target: ${targetPrice.toFixed(2)}`);
+                
+                const response = await fetch('/api/delta/place-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        side: side,
+                        order_type: 'market',
+                        quantity: quantity
+                    })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    const successMsg = `✅ Strategy ${side.toUpperCase()} order placed on Delta Exchange: ${quantity} ${symbol} @ Market`;
+                    console.log(successMsg);
+                    addToStrategyLog(successMsg);
+                    addToStrategyLog(`📋 Order ID: ${data.data?.id || data.data?.order_id || 'N/A'}`);
+                    addToStrategyLog(`🛡️ Stop Loss: ${slPrice.toFixed(2)} (${slPoints} points)`);
+                    addToStrategyLog(`🎯 Target: ${targetPrice.toFixed(2)} (${targetPoints} points)`);
+                    registerStrategySlTpWatch(symbol, slPoints, targetPoints);
+                    
+                    showStrategySignal(symbol, side.toUpperCase(), `Live order placed: ${quantity} @ Market`);
+                    updateActivity(side, symbol, quantity, null);
+                    loadOrders();
+                    loadPositions();
+                } else {
+                    const errorMsg = `❌ Strategy order failed: ${data.error || 'Unknown error'}`;
+                    console.error(errorMsg);
+                    addToStrategyLog(errorMsg);
+                    showStrategySignal(symbol, side.toUpperCase(), `Order failed: ${data.error}`);
+                }
+            } catch (error) {
+                const errorMsg = `❌ Strategy order error: ${error.message}`;
+                console.error(errorMsg);
+                addToStrategyLog(errorMsg);
+                showStrategySignal(symbol, side.toUpperCase(), `Error: ${error.message}`);
+            }
+        }
+
+        function showStrategySignal(symbol, signal, message) {
+            const statusEl = document.getElementById('customStrategyStatus');
+            const timestamp = new Date().toLocaleTimeString();
+            statusEl.innerHTML = `<strong>${signal} Signal</strong> - ${symbol} | ${message} | ${timestamp}`;
+            statusEl.style.color = signal === 'BUY' ? '#10b981' : '#ef4444';
+            
+            // Add to activity feed
+            updateActivity(signal.toLowerCase(), symbol, 0, null);
+        }
+
+        function addToStrategyLog(message) {
+            const logDiv = document.getElementById('strategyLog');
+            if (logDiv) {
+                const timestamp = new Date().toLocaleTimeString();
+                const logEntry = document.createElement('div');
+                logEntry.style.padding = '5px';
+                logEntry.style.borderBottom = '1px solid #e5e7eb';
+                logEntry.textContent = `[${timestamp}] ${message}`;
+                
+                // Color code based on message type
+                if (message.includes('SIGNAL') || message.includes('✅')) {
+                    logEntry.style.color = '#10b981';
+                    logEntry.style.fontWeight = '600';
+                } else if (message.includes('Error') || message.includes('❌')) {
+                    logEntry.style.color = '#ef4444';
+                } else if (message.includes('⚠️')) {
+                    logEntry.style.color = '#f59e0b';
+                } else {
+                    logEntry.style.color = '#6b7280';
+                }
+                
+                logDiv.insertBefore(logEntry, logDiv.firstChild);
+                
+                // Keep only last 20 log entries
+                while (logDiv.children.length > 20) {
+                    logDiv.removeChild(logDiv.lastChild);
+                }
+            }
+        }
+
+        let lastBacktestResult = null;
+        let lastBacktestPageResult = null;
+        let backtestReportsHistory = [];
+        const BACKTEST_REPORTS_STORAGE_KEY = 'backtest_reports_history_v1';
+
+        function renderBacktestReports(containerId, reports) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!reports.length) {
+                container.innerHTML = '<div class="backtest-report-empty">Run backtest to generate report history.</div>';
+                return;
+            }
+            container.innerHTML = reports.map((r) => `
+                <div class="backtest-report-item">
+                    <div class="backtest-report-header">
+                        <span class="backtest-report-symbol">${r.symbol} • ${r.timeframe} • ${r.days}d</span>
+                        <span class="backtest-report-time">${r.runAt}</span>
+                    </div>
+                    <div class="backtest-report-line">Source: ${r.source}</div>
+                    <div class="backtest-report-line">Indicators: EMA(${r.ema9}, ${r.ema21}, ${r.ema50}) | RSI: ${r.rsiText} | No-entry(11-14 IST): ${r.noEntryWindow ? 'ON' : 'OFF'}</div>
+                    <div class="backtest-report-line">Trades: ${r.totalTrades} | SL Hits: ${r.slHits} | Target Hits: ${r.targetHits} | Win Rate: ${r.winRate}% | P&L: <span class="${r.totalProfit >= 0 ? 'backtest-report-pnl-positive' : 'backtest-report-pnl-negative'}">${r.totalProfit >= 0 ? '+' : ''}${r.totalProfit.toFixed(2)}</span></div>
+                </div>
+            `).join('');
+        }
+
+        function persistBacktestReports() {
+            try {
+                localStorage.setItem(BACKTEST_REPORTS_STORAGE_KEY, JSON.stringify(backtestReportsHistory));
+            } catch (err) {
+                console.warn('Could not persist backtest reports history:', err);
+            }
+        }
+
+        function loadBacktestReports() {
+            try {
+                const raw = localStorage.getItem(BACKTEST_REPORTS_STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+                backtestReportsHistory = Array.isArray(parsed) ? parsed : [];
+            } catch (err) {
+                console.warn('Could not load backtest reports history:', err);
+                backtestReportsHistory = [];
+            }
+        }
+
+        function renderAllBacktestReports() {
+            renderBacktestReports('backtestReportsHistory', backtestReportsHistory);
+            renderBacktestReports('backtestPageReportsHistory', backtestReportsHistory);
+        }
+
+        function escapeXml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+
+        function worksheetSafeName(name) {
+            const cleaned = String(name || 'Backtest')
+                .replace(/[\\/*?:[\]]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return cleaned.slice(0, 31) || 'Backtest';
+        }
+
+        function toExcelCell(value, type = 'String') {
+            const cellType = type === 'Number' ? 'Number' : 'String';
+            return `<Cell><Data ss:Type="${cellType}">${escapeXml(value)}</Data></Cell>`;
+        }
+
+        function downloadBacktestReports() {
+            if (!backtestReportsHistory.length) {
+                alert('No backtest history available to export.');
+                return;
+            }
+
+            const workbookSheets = backtestReportsHistory.map((r, idx) => {
+                const sheetName = worksheetSafeName(`Run ${idx + 1} ${r.symbol || 'BT'}`);
+                const trades = Array.isArray(r.trades) ? r.trades : [];
+                const runNo = backtestReportsHistory.length - idx;
+                let rows = '';
+
+                rows += `<Row>${toExcelCell(`Backtest Report #${runNo}`)}</Row>`;
+                rows += `<Row>${toExcelCell('')}</Row>`;
+                rows += `<Row>${toExcelCell('Run Time')}${toExcelCell(r.runAt)}</Row>`;
+                rows += `<Row>${toExcelCell('Source')}${toExcelCell(r.source)}</Row>`;
+                rows += `<Row>${toExcelCell('Symbol')}${toExcelCell(r.symbol)}</Row>`;
+                rows += `<Row>${toExcelCell('Timeframe')}${toExcelCell(r.timeframe)}</Row>`;
+                rows += `<Row>${toExcelCell('Days')}${toExcelCell(r.days, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('Lots / Qty')}${toExcelCell(r.lots, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('SL Points')}${toExcelCell(r.slPoints, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('Target Points')}${toExcelCell(r.targetPoints, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('EMA Settings')}${toExcelCell(`${r.ema9}/${r.ema21}/${r.ema50}`)}</Row>`;
+                rows += `<Row>${toExcelCell('RSI Settings')}${toExcelCell(r.rsiText)}</Row>`;
+                rows += `<Row>${toExcelCell('No Entry Window (11-14 IST)')}${toExcelCell(r.noEntryWindow ? 'ON' : 'OFF')}</Row>`;
+                rows += `<Row>${toExcelCell('Total Profit')}${toExcelCell(r.totalProfit, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('Accuracy (%)')}${toExcelCell(r.winRate, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('Total Number of Trades')}${toExcelCell(r.totalTrades, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('SL Hits')}${toExcelCell(r.slHits, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('Target Hits')}${toExcelCell(r.targetHits, 'Number')}</Row>`;
+                rows += `<Row>${toExcelCell('')}</Row>`;
+                rows += `<Row>${
+                    toExcelCell('Side') +
+                    toExcelCell('Status') +
+                    toExcelCell('Entry Time') +
+                    toExcelCell('Exit Time') +
+                    toExcelCell('Entry Price') +
+                    toExcelCell('Exit Price') +
+                    toExcelCell('Qty/Lots') +
+                    toExcelCell('SL Price') +
+                    toExcelCell('Target Price') +
+                    toExcelCell('PnL') +
+                    toExcelCell('PnL Points')
+                }</Row>`;
+
+                trades.forEach((t) => {
+                    const entryPrice = Number(t.entry_price || 0);
+                    const side = String(t.side || '').toLowerCase();
+                    const slPoints = Number(r.slPoints || 0);
+                    const targetPoints = Number(r.targetPoints || 0);
+                    const slPrice = side === 'buy' ? entryPrice - slPoints : entryPrice + slPoints;
+                    const targetPrice = side === 'buy' ? entryPrice + targetPoints : entryPrice - targetPoints;
+                    const entryTime = t.entry_time ? new Date(t.entry_time).toLocaleString() : '';
+                    const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString() : '';
+
+                    rows += `<Row>${
+                        toExcelCell(String(t.side || '').toUpperCase()) +
+                        toExcelCell(String(t.status || '')) +
+                        toExcelCell(entryTime) +
+                        toExcelCell(exitTime) +
+                        toExcelCell(t.entry_price ?? '', 'Number') +
+                        toExcelCell(t.exit_price ?? '', 'Number') +
+                        toExcelCell(r.lots ?? '', 'Number') +
+                        toExcelCell(slPrice, 'Number') +
+                        toExcelCell(targetPrice, 'Number') +
+                        toExcelCell(t.pnl ?? '', 'Number') +
+                        toExcelCell(t.pnl_points ?? '', 'Number')
+                    }</Row>`;
+                });
+
+                return `<Worksheet ss:Name="${escapeXml(sheetName)}"><Table>${rows}</Table></Worksheet>`;
+            }).join('');
+
+            const workbookXml = `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+${workbookSheets}
+</Workbook>`;
+
+            const blob = new Blob([workbookXml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            a.href = url;
+            a.download = `backtest-history-${ts}.xls`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function appendBacktestReport(listType, payload) {
+            const report = {
+                runAt: new Date().toLocaleString(),
+                source: listType === 'sidebar' ? 'Sidebar Backtest' : 'Backtest Page',
+                symbol: payload.symbol,
+                timeframe: payload.timeframe,
+                days: payload.days,
+                ema9: payload.ema9,
+                ema21: payload.ema21,
+                ema50: payload.ema50,
+                rsiText: payload.rsiEnabled ? `${payload.rsiPeriod}/${payload.rsiOverbought}/${payload.rsiOversold}` : 'OFF',
+                noEntryWindow: payload.noEntryWindow,
+                lots: payload.lots,
+                slPoints: payload.slPoints,
+                targetPoints: payload.targetPoints,
+                totalTrades: payload.totalTrades,
+                slHits: payload.slHits,
+                targetHits: payload.targetHits,
+                winRate: payload.winRate,
+                totalProfit: payload.totalProfit,
+                trades: Array.isArray(payload.trades) ? payload.trades : []
+            };
+            backtestReportsHistory.unshift(report);
+            persistBacktestReports();
+            renderAllBacktestReports();
+        }
+
+        function recalcBacktestLotsSidebar() {
+            if (!lastBacktestResult) return;
+            const el = document.getElementById('backtestLots');
+            const backtestStats = document.getElementById('backtestStats');
+            const backtestTrades = document.getElementById('backtestTrades');
+            if (!el || !backtestStats || !backtestTrades) return;
+            const newLots = Math.max(0.01, parseFloat(el.value) || 1);
+            const { data, symbol, periodLabel, timeframe } = lastBacktestResult;
+            const trades = data.trades || [];
+            let totalProfit = 0;
+            trades.forEach(t => {
+                const pts = t.pnl_points != null ? t.pnl_points * 0.001 : (t.pnl / (data.lots || 1));
+                totalProfit += pts * newLots;
+            });
+            const emaInfo = data.ema_periods ? `EMA(${data.ema_periods.ema9},${data.ema_periods.ema21},${data.ema_periods.ema50})` : '';
+            backtestStats.innerHTML = `
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Completed Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #374151;">${data.total_trades}</div>
+                    ${data.total_signals ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 5px;">${data.total_signals} signals</div>` : ''}
+                    ${emaInfo ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${emaInfo}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Win Rate</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.win_rate}%</div>
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Winning Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.winning_trades}</div>
+                    ${data.target_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">Target Hits: ${data.target_hits}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Losing Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #ef4444;">${data.losing_trades}</div>
+                    ${data.sl_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">SL Hits: ${data.sl_hits}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Total Profit${newLots !== 1 ? ' (' + newLots + ' lots)' : ''}</div>
+                    <div style="font-size: 24px; font-weight: 700; color: ${totalProfit >= 0 ? '#10b981' : '#ef4444'};">${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}</div>
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Days (data used)</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #374151;">${data.days_covered != null ? data.days_covered : (data.days_requested || '')}</div>
+                    <div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? 'of ' + data.days_requested + ' requested · ' : ''}${data.total_candles || 0} candles</div>
+                    ${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? '<div style="font-size: 10px; color: #b45309; margin-top: 4px;">Exchange limited history for this timeframe</div>' : ''}
+                </div>
+            `;
+            if (trades.length > 0) {
+                backtestTrades.innerHTML = `
+                    <div style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 10px;">Recent Trades:</div>
+                    <div style="max-height: 300px; overflow-y: auto;">
+                        ${trades.map(trade => {
+                            const entryDate = new Date(trade.entry_time).toLocaleString();
+                            const exitDate = new Date(trade.exit_time).toLocaleString();
+                            const pts = trade.pnl_points != null ? trade.pnl_points * 0.001 : (trade.pnl / (data.lots || 1));
+                            const pnl = pts * newLots;
+                            const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
+                            const statusColor = trade.status === 'TARGET_HIT' ? '#10b981' : trade.status === 'SL_HIT' ? '#ef4444' : '#6b7280';
+                            return `<div style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 8px; border-left: 4px solid ${pnlColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <span style="font-weight: 600; color: #374151;">${trade.side.toUpperCase()} - ${symbol}</span>
+                                    <span style="font-weight: 700; color: ${pnlColor}; font-size: 14px;">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}${newLots !== 1 ? ' (' + pts.toFixed(2) + ' pts × ' + newLots + ')' : ' points'}</span>
+                                </div>
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 3px;">Entry: $${trade.entry_price.toFixed(2)} | Exit: $${trade.exit_price.toFixed(2)}</div>
+                                <div style="font-size: 11px; color: ${statusColor}; font-weight: 600;">${trade.status.replace('_', ' ')} | ${entryDate} → ${exitDate}</div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                `;
+            }
+        }
+
+        function recalcBacktestLotsPage() {
+            if (!lastBacktestPageResult) return;
+            const el = document.getElementById('backtestPageLots');
+            const statsDiv = document.getElementById('backtestPageStats');
+            const tradesDiv = document.getElementById('backtestPageTrades');
+            if (!el || !statsDiv || !tradesDiv) return;
+            const newLots = Math.max(0.01, parseFloat(el.value) || 1);
+            const { data, symbol, periodLabel, timeframe } = lastBacktestPageResult;
+            const trades = data.trades || [];
+            let totalProfit = 0;
+            trades.forEach(t => {
+                const pts = t.pnl_points != null ? t.pnl_points * 0.001 : (t.pnl / (data.lots || 1));
+                totalProfit += pts * newLots;
+            });
+            const emaInfo = data.ema_periods ? `EMA(${data.ema_periods.ema9},${data.ema_periods.ema21},${data.ema_periods.ema50})` : '';
+            statsDiv.innerHTML = `
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Completed Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #374151;">${data.total_trades}</div>
+                    ${data.total_signals ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 5px;">${data.total_signals} signals</div>` : ''}
+                    ${emaInfo ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${emaInfo}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Win Rate</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.win_rate}%</div>
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Winning Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.winning_trades}</div>
+                    ${data.target_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">Target Hits: ${data.target_hits}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Losing Trades</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #ef4444;">${data.losing_trades}</div>
+                    ${data.sl_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">SL Hits: ${data.sl_hits}</div>` : ''}
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Total Profit${newLots !== 1 ? ' (' + newLots + ' lots)' : ''}</div>
+                    <div style="font-size: 24px; font-weight: 700; color: ${totalProfit >= 0 ? '#10b981' : '#ef4444'};">${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}</div>
+                </div>
+                <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                    <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Days (data used)</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #374151;">${data.days_covered != null ? data.days_covered : (data.days_requested || '')}</div>
+                    <div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? 'of ' + data.days_requested + ' requested · ' : ''}${data.total_candles || 0} candles</div>
+                    ${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? '<div style="font-size: 10px; color: #b45309; margin-top: 4px;">Exchange limited history for this timeframe</div>' : ''}
+                </div>
+            `;
+            if (trades.length > 0) {
+                tradesDiv.innerHTML = `
+                    <div style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 10px;">Recent Trades:</div>
+                    <div style="max-height: 360px; overflow-y: auto;">
+                        ${trades.map(trade => {
+                            const entryDate = new Date(trade.entry_time).toLocaleString();
+                            const exitDate = new Date(trade.exit_time).toLocaleString();
+                            const pts = trade.pnl_points != null ? trade.pnl_points * 0.001 : (trade.pnl / (data.lots || 1));
+                            const pnl = pts * newLots;
+                            const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
+                            const statusColor = trade.status === 'TARGET_HIT' ? '#10b981' : trade.status === 'SL_HIT' ? '#ef4444' : '#6b7280';
+                            return `<div style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 8px; border-left: 4px solid ${pnlColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <span style="font-weight: 600; color: #374151;">${trade.side.toUpperCase()} - ${symbol}</span>
+                                    <span style="font-weight: 700; color: ${pnlColor}; font-size: 14px;">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}${newLots !== 1 ? ' (' + pts.toFixed(2) + ' pts × ' + newLots + ')' : ' points'}</span>
+                                </div>
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 3px;">Entry: $${trade.entry_price.toFixed(2)} | Exit: $${trade.exit_price.toFixed(2)}</div>
+                                <div style="font-size: 11px; color: ${statusColor}; font-weight: 600;">${trade.status.replace('_', ' ')} | ${entryDate} → ${exitDate}</div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                `;
+            }
+        }
+
+        async function runBacktestFromPage() {
+            const strategy = (document.getElementById('backtestPageStrategy')?.value || 'ema-crossover').toLowerCase();
+            const symbol = document.getElementById('backtestPageSymbol').value;
+            const slPoints = parseFloat(document.getElementById('backtestPageSL').value) || 400;
+            const targetPoints = parseFloat(document.getElementById('backtestPageTarget').value) || 800;
+            const ema9 = parseInt(document.getElementById('backtestPageEma9').value) || 9;
+            const ema21 = parseInt(document.getElementById('backtestPageEma21').value) || 21;
+            const ema50 = parseInt(document.getElementById('backtestPageEma50').value) || 50;
+            const days = Math.max(1, Math.min(700, parseInt(document.getElementById('backtestPagePeriod').value) || 30));
+            const timeframe = document.getElementById('backtestPageTimeframe').value || '5m';
+            const lots = Math.max(0.01, parseFloat(document.getElementById('backtestPageLots').value) || 1);
+            
+            // RSI Parameters
+            const useRSI = document.getElementById('backtestPageUseRSI').checked;
+            const rsiPeriod = parseInt(document.getElementById('backtestPageRSIPeriod').value) || 14;
+            const rsiOverbought = parseFloat(document.getElementById('backtestPageRSIOverbought').value) || 60;
+            const rsiOversold = parseFloat(document.getElementById('backtestPageRSIOversold').value) || 40;
+            const useNoEntryWindow = document.getElementById('backtestPageNoEntryWindow')?.checked ?? true;
+            const rangeStart = document.getElementById('backtestPageRangeStart')?.value || '11:00';
+            const rangeEnd = document.getElementById('backtestPageRangeEnd')?.value || '13:00';
+            const periodLabel = days + ' Days';
+            const resultsDiv = document.getElementById('backtestPageResults');
+            const statsDiv = document.getElementById('backtestPageStats');
+            const tradesDiv = document.getElementById('backtestPageTrades');
+            const titleDiv = document.getElementById('backtestPageTitle');
+            const loadingDiv = document.getElementById('backtestPageLoading');
+            if (loadingDiv) loadingDiv.style.display = 'block';
+            if (resultsDiv) resultsDiv.style.display = 'block';
+            if (titleDiv) titleDiv.textContent = '📊 Backtest Results (' + periodLabel + ' - ' + timeframe + ')';
+            if (statsDiv) statsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Loading...</div>';
+            if (tradesDiv) tradesDiv.innerHTML = '';
+            try {
+                let apiUrl = '/api/backtest?strategy=' + encodeURIComponent(strategy) + '&symbol=' + encodeURIComponent(symbol) + '&lots=' + lots + '&days=' + days + '&timeframe=' + encodeURIComponent(timeframe);
+                
+                if (strategy === 'ema-crossover') {
+                    apiUrl += '&sl_points=' + slPoints + '&target_points=' + targetPoints + '&ema9=' + ema9 + '&ema21=' + ema21 + '&ema50=' + ema50;
+                    // Add RSI parameters if enabled
+                    if (useRSI) {
+                        apiUrl += '&use_rsi_filter=true&rsi_period=' + rsiPeriod + '&rsi_overbought=' + rsiOverbought + '&rsi_oversold=' + rsiOversold;
+                    }
+                    apiUrl += '&use_no_entry_window=' + useNoEntryWindow;
+                } else {
+                    // Range Breakout: RSI mandatory + range window + user SL/Target (points from entry)
+                    apiUrl += '&sl_points=' + slPoints + '&target_points=' + targetPoints;
+                    apiUrl += '&use_rsi_filter=true&rsi_period=' + rsiPeriod + '&rsi_overbought=' + rsiOverbought + '&rsi_oversold=' + rsiOversold;
+                    apiUrl += '&range_timezone=Asia%2FKolkata&range_start=' + encodeURIComponent(rangeStart) + '&range_end=' + encodeURIComponent(rangeEnd);
+                    apiUrl += '&use_no_entry_window=false';
+                }
+                
+                const response = await fetch(apiUrl);
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error('Server returned non-JSON. Status: ' + response.status);
+                }
+                const data = await response.json();
+                if (loadingDiv) loadingDiv.style.display = 'none';
+                if (data.success) {
+                    const strategyLabel = data.strategy ? (data.strategy === 'range-breakout' ? 'Range Breakout' : 'EMA Crossover') : '';
+                    const emaInfo = data.ema_periods ? 'EMA(' + data.ema_periods.ema9 + ',' + data.ema_periods.ema21 + ',' + data.ema_periods.ema50 + ')' : '';
+                    const rsiInfo = data.rsi_settings && data.rsi_settings.enabled ? 'RSI(' + data.rsi_settings.period + ',' + data.rsi_settings.overbought + ',' + data.rsi_settings.oversold + ')' : '';
+                    const rangeInfo = data.range_settings ? ('Range ' + (data.range_settings.start || '') + '→' + (data.range_settings.end || '') + ' IST · SL ' + (data.range_settings.sl_points != null ? data.range_settings.sl_points : slPoints) + ' / Tgt ' + (data.range_settings.target_points != null ? data.range_settings.target_points : targetPoints) + ' pts') : '';
+                    const lotsLabel = (data.lots && data.lots !== 1) ? ' (' + data.lots + ' lots)' : '';
+                    var daysSub = (data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested) ? ('of ' + data.days_requested + ' requested · ' + (data.total_candles || 0) + ' candles') : ((data.total_candles || 0) + ' candles');
+                    var daysLimitedNote = (data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested) ? '<div style="font-size: 10px; color: #b45309; margin-top: 4px;">Exchange limited history for this timeframe</div>' : '';
+                    statsDiv.innerHTML = '<div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Completed Trades</div><div style="font-size: 24px; font-weight: 700; color: #374151;">' + data.total_trades + '</div>' + (data.total_signals ? '<div style="font-size: 10px; color: #9ca3af; margin-top: 5px;">' + data.total_signals + ' signals</div>' : '') + (strategyLabel ? '<div style="font-size: 10px; color: #6366f1; margin-top: 3px; font-weight: 700;">' + strategyLabel + '</div>' : '') + (emaInfo ? '<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">' + emaInfo + '</div>' : '') + (rangeInfo ? '<div style="font-size: 10px; color: #6366f1; margin-top: 3px;">' + rangeInfo + '</div>' : '') + (rsiInfo ? '<div style="font-size: 10px; color: #f59e0b; margin-top: 3px;">' + rsiInfo + '</div>' : '') + '</div><div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Win Rate</div><div style="font-size: 24px; font-weight: 700; color: #10b981;">' + data.win_rate + '%</div></div><div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Winning</div><div style="font-size: 24px; font-weight: 700; color: #10b981;">' + data.winning_trades + '</div>' + (data.target_hits !== undefined ? '<div style="font-size: 10px; color: #9ca3af;">Target: ' + data.target_hits + '</div>' : '') + '</div><div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Losing</div><div style="font-size: 24px; font-weight: 700; color: #ef4444;">' + data.losing_trades + '</div>' + (data.sl_hits !== undefined ? '<div style="font-size: 10px; color: #9ca3af;">SL: ' + data.sl_hits + '</div>' : '') + '</div><div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Total Profit' + lotsLabel + '</div><div style="font-size: 24px; font-weight: 700; color: ' + (data.total_profit >= 0 ? '#10b981' : '#ef4444') + ';">' + (data.total_profit >= 0 ? '+' : '') + data.total_profit.toFixed(2) + '</div></div><div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;"><div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Days (data used)</div><div style="font-size: 20px; font-weight: 700;">' + (data.days_covered != null ? data.days_covered : (data.days_requested || days)) + '</div><div style="font-size: 10px; color: #9ca3af;">' + daysSub + '</div>' + daysLimitedNote + '</div>';
+                    if (data.trades && data.trades.length > 0) {
+                        tradesDiv.innerHTML = '<div style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 10px;">Recent Trades</div>' + data.trades.map(function(trade) {
+                            var entryDate = new Date(trade.entry_time).toLocaleString();
+                            var exitDate = new Date(trade.exit_time).toLocaleString();
+                            var pnlColor = trade.pnl >= 0 ? '#10b981' : '#ef4444';
+                            var statusColor = trade.status === 'TARGET_HIT' ? '#10b981' : trade.status === 'SL_HIT' ? '#ef4444' : '#6b7280';
+                            return '<div style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 8px; border-left: 4px solid ' + pnlColor + ';"><div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;"><span style="font-weight: 600;">' + trade.side.toUpperCase() + ' - ' + symbol + '</span><span style="font-weight: 700; color: ' + pnlColor + ';">' + (trade.pnl >= 0 ? '+' : '') + trade.pnl.toFixed(2) + (data.lots && data.lots !== 1 ? ' ($' + (trade.pnl_points != null ? (trade.pnl_points * 0.001).toFixed(2) : (trade.pnl / data.lots).toFixed(2)) + '/lot × ' + data.lots + ' lots)' : '') + '</span></div><div style="font-size: 11px; color: #6b7280;">Entry: $' + trade.entry_price.toFixed(2) + ' | Exit: $' + trade.exit_price.toFixed(2) + '</div><div style="font-size: 11px; color: ' + statusColor + '; font-weight: 600;">' + trade.status.replace('_', ' ') + ' | ' + entryDate + ' → ' + exitDate + '</div></div>';
+                        }).join('');
+                    } else {
+                        tradesDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">No trades in this period</div>';
+                    }
+                    lastBacktestPageResult = { data, symbol, periodLabel, timeframe };
+                    appendBacktestReport('page', {
+                        strategy: data.strategy || strategy,
+                        symbol,
+                        timeframe,
+                        days,
+                        ema9,
+                        ema21,
+                        ema50,
+                        rsiEnabled: !!(data.rsi_settings && data.rsi_settings.enabled),
+                        rsiPeriod: data.rsi_settings?.period ?? rsiPeriod,
+                        rsiOverbought: data.rsi_settings?.overbought ?? rsiOverbought,
+                        rsiOversold: data.rsi_settings?.oversold ?? rsiOversold,
+                        rangeStart: data.range_settings?.start ?? rangeStart,
+                        rangeEnd: data.range_settings?.end ?? rangeEnd,
+                        noEntryWindow: !!data.use_no_entry_window,
+                        lots: data.lots || lots,
+                        slPoints: data.sl_points || slPoints,
+                        targetPoints: data.target_points || targetPoints,
+                        totalTrades: data.total_trades || 0,
+                        slHits: data.sl_hits || 0,
+                        targetHits: data.target_hits || 0,
+                        winRate: data.win_rate || 0,
+                        totalProfit: data.total_profit || 0,
+                        trades: data.trades || []
+                    });
+                    if (titleDiv && data.days_covered != null && data.days_requested != null && data.days_covered < data.days_requested) {
+                        titleDiv.textContent = '📊 Backtest Results (' + periodLabel + ' - ' + timeframe + ' · ' + data.days_covered + ' days data)';
+                    }
+                } else {
+                    lastBacktestPageResult = null;
+                    if (loadingDiv) loadingDiv.style.display = 'none';
+                    statsDiv.innerHTML = '<div style="padding: 20px; color: #ef4444;"><div style="font-weight: 600;">❌ Backtest failed</div><div style="font-size: 13px;">' + (data.error || 'Unknown error') + '</div></div>';
+                    tradesDiv.innerHTML = '';
+                }
+            } catch (err) {
+                lastBacktestPageResult = null;
+                if (loadingDiv) loadingDiv.style.display = 'none';
+                statsDiv.innerHTML = '<div style="padding: 20px; color: #ef4444;"><div style="font-weight: 600;">❌ Error</div><div style="font-size: 13px;">' + err.message + '</div></div>';
+                tradesDiv.innerHTML = '';
+            }
+        }
+
+        function syncBacktestPageStrategyUI() {
+            const strategy = (document.getElementById('backtestPageStrategy')?.value || 'ema-crossover').toLowerCase();
+            const emaFields = document.getElementById('backtestPageEmaFields');
+            const fixedRiskFields = document.getElementById('backtestPageFixedRiskFields');
+            const rangeSection = document.getElementById('backtestPageRangeSection');
+            const rsiTitle = document.getElementById('backtestPageRsiTitle');
+            const rsiHint = document.getElementById('backtestPageRsiHint');
+            const useRsiEl = document.getElementById('backtestPageUseRSI');
+            const noEntryEl = document.getElementById('backtestPageNoEntryWindow');
+            if (strategy === 'range-breakout') {
+                if (emaFields) emaFields.style.display = 'none';
+                if (fixedRiskFields) fixedRiskFields.style.display = 'contents';
+                if (rangeSection) rangeSection.style.display = 'block';
+                if (rsiTitle) rsiTitle.textContent = '📈 RSI Settings (Required for Range Breakout)';
+                if (rsiHint) rsiHint.innerHTML = '💡 <strong>Rule:</strong> BUY only when RSI &gt; Upper, SELL only when RSI &lt; Lower (entry breakout candle high/low break par).';
+                if (useRsiEl) { useRsiEl.checked = true; useRsiEl.disabled = true; }
+                if (noEntryEl) { noEntryEl.checked = false; noEntryEl.disabled = true; }
+            } else {
+                if (emaFields) emaFields.style.display = 'contents';
+                if (fixedRiskFields) fixedRiskFields.style.display = 'contents';
+                if (rangeSection) rangeSection.style.display = 'none';
+                if (rsiTitle) rsiTitle.textContent = '📈 RSI Filter Settings (Optional)';
+                if (rsiHint) rsiHint.innerHTML = '💡 <strong>RSI Filter:</strong> Trades execute only when RSI ≤ Oversold OR RSI ≥ Overbought. Trades blocked when RSI is between oversold and overbought levels.';
+                if (useRsiEl) { useRsiEl.disabled = false; }
+                if (noEntryEl) { noEntryEl.disabled = false; }
+            }
+        }
+
+        async function runBacktest() {
+            const symbol = document.getElementById('customStrategySymbol').value;
+            const slPoints = parseFloat(document.getElementById('customStrategySL').value) || 400;
+            const targetPoints = parseFloat(document.getElementById('customStrategyTarget').value) || 800;
+            const lots = Math.max(0.01, parseFloat(document.getElementById('backtestLots').value) || 1);
+            const ema9 = parseInt(document.getElementById('customEma9').value) || 9;
+            const ema21 = parseInt(document.getElementById('customEma21').value) || 21;
+            const ema50 = parseInt(document.getElementById('customEma50').value) || 50;
+            const days = Math.max(1, Math.min(700, parseInt(document.getElementById('backtestPeriod').value) || 30));
+            const timeframe = document.getElementById('backtestTimeframe').value || '5m';
+            const useRSI = document.getElementById('backtestUseRSI')?.checked || false;
+            const rsiPeriod = parseInt(document.getElementById('backtestRSIPeriod')?.value) || 14;
+            const rsiOverbought = parseFloat(document.getElementById('backtestRSIOverbought')?.value) || 60;
+            const rsiOversold = parseFloat(document.getElementById('backtestRSIOversold')?.value) || 40;
+            const useNoEntryWindow = document.getElementById('backtestNoEntryWindow')?.checked ?? true;
+            const periodLabel = days + ' Days';
+            
+            const backtestResults = document.getElementById('backtestResults');
+            const backtestStats = document.getElementById('backtestStats');
+            const backtestTrades = document.getElementById('backtestTrades');
+            const backtestResultsTitle = document.getElementById('backtestResultsTitle');
+            
+            backtestResults.style.display = 'block';
+            backtestStats.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Loading backtest data... (This may take a few seconds for large datasets)</div>';
+            backtestTrades.innerHTML = '';
+            backtestResultsTitle.textContent = `📊 Backtest Results (${periodLabel} - ${timeframe} Timeframe)`;
+            
+            addToStrategyLog(`📊 Starting professional backtest: ${symbol}, ${days} days, ${timeframe}, Lots: ${lots}, EMA(${ema9},${ema21},${ema50}), SL: ${slPoints} points, Target: ${targetPoints} points${useRSI ? `, RSI(${rsiPeriod},${rsiOverbought},${rsiOversold})` : ''}, No-entry window: ${useNoEntryWindow ? 'ON' : 'OFF'}`);
+            
+            try {
+                let apiUrl = `/api/backtest?symbol=${symbol}&sl_points=${slPoints}&target_points=${targetPoints}&lots=${lots}&ema9=${ema9}&ema21=${ema21}&ema50=${ema50}&days=${days}&timeframe=${timeframe}`;
+                if (useRSI) {
+                    apiUrl += `&use_rsi_filter=true&rsi_period=${rsiPeriod}&rsi_overbought=${rsiOverbought}&rsi_oversold=${rsiOversold}`;
+                }
+                apiUrl += `&use_no_entry_window=${useNoEntryWindow}`;
+                const response = await fetch(apiUrl);
+                
+                // Check if response is JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.error('Non-JSON response:', text.substring(0, 500));
+                    throw new Error(`Server returned non-JSON response. Status: ${response.status}. Check server logs.`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    const emaInfo = data.ema_periods ? `EMA(${data.ema_periods.ema9},${data.ema_periods.ema21},${data.ema_periods.ema50})` : '';
+                    const rsiInfo = data.rsi_settings && data.rsi_settings.enabled ? `RSI(${data.rsi_settings.period},${data.rsi_settings.overbought},${data.rsi_settings.oversold})` : '';
+                    // Display stats
+                    backtestStats.innerHTML = `
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Completed Trades</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #374151;">${data.total_trades}</div>
+                            ${data.total_signals ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 5px;">${data.total_signals} signals</div>` : ''}
+                            ${emaInfo ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${emaInfo}</div>` : ''}
+                            ${rsiInfo ? `<div style="font-size: 10px; color: #f59e0b; margin-top: 3px;">${rsiInfo}</div>` : ''}
+                        </div>
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Win Rate</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.win_rate}%</div>
+                        </div>
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Winning Trades</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #10b981;">${data.winning_trades}</div>
+                            ${data.target_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">Target Hits: ${data.target_hits}</div>` : ''}
+                        </div>
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Losing Trades</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #ef4444;">${data.losing_trades}</div>
+                            ${data.sl_hits !== undefined ? `<div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">SL Hits: ${data.sl_hits}</div>` : ''}
+                        </div>
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Total Profit${data.lots && data.lots !== 1 ? ' (' + data.lots + ' lots)' : ''}</div>
+                            <div style="font-size: 24px; font-weight: 700; color: ${data.total_profit >= 0 ? '#10b981' : '#ef4444'};">${data.total_profit >= 0 ? '+' : ''}${data.total_profit.toFixed(2)}</div>
+                        </div>
+                        <div style="padding: 15px; background: white; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;">Days (data used)</div>
+                            <div style="font-size: 20px; font-weight: 700; color: #374151;">${data.days_covered != null ? data.days_covered : (data.days_requested || days)}</div>
+                            <div style="font-size: 10px; color: #9ca3af; margin-top: 3px;">${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? 'of ' + data.days_requested + ' requested · ' : ''}${data.total_candles || 0} candles</div>
+                            ${data.days_requested != null && data.days_covered != null && data.days_covered < data.days_requested ? '<div style="font-size: 10px; color: #b45309; margin-top: 4px;">Exchange limited history for this timeframe</div>' : ''}
+                        </div>
+                    `;
+                    
+                    // Display trades
+                    if (data.trades && data.trades.length > 0) {
+                        backtestTrades.innerHTML = `
+                            <div style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 10px;">Recent Trades:</div>
+                            <div style="max-height: 300px; overflow-y: auto;">
+                                ${data.trades.map((trade, idx) => {
+                                    const entryDate = new Date(trade.entry_time).toLocaleString();
+                                    const exitDate = new Date(trade.exit_time).toLocaleString();
+                                    const pnlColor = trade.pnl >= 0 ? '#10b981' : '#ef4444';
+                                    const statusColor = trade.status === 'TARGET_HIT' ? '#10b981' : 
+                                                       trade.status === 'SL_HIT' ? '#ef4444' : '#6b7280';
+                                    
+                                    return `
+                                        <div style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 8px; border-left: 4px solid ${pnlColor};">
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                                <span style="font-weight: 600; color: #374151;">${trade.side.toUpperCase()} - ${symbol}</span>
+                                                <span style="font-weight: 700; color: ${pnlColor}; font-size: 14px;">
+                                                    ${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}${data.lots && data.lots !== 1 && trade.pnl_points != null ? ' ($' + (trade.pnl_points * 0.001).toFixed(2) + '/lot × ' + data.lots + ' lots)' : ''}
+                                                </span>
+                                            </div>
+                                            <div style="font-size: 11px; color: #6b7280; margin-bottom: 3px;">
+                                                Entry: $${trade.entry_price.toFixed(2)} | Exit: $${trade.exit_price.toFixed(2)}
+                                            </div>
+                                            <div style="font-size: 11px; color: ${statusColor}; font-weight: 600;">
+                                                ${trade.status.replace('_', ' ')} | ${entryDate} → ${exitDate}
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        `;
+                    } else {
+                        backtestTrades.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">No trades generated during backtest period</div>';
+                    }
+                    
+                    lastBacktestResult = { data, symbol, periodLabel, timeframe };
+                    appendBacktestReport('sidebar', {
+                        symbol,
+                        timeframe,
+                        days,
+                        ema9,
+                        ema21,
+                        ema50,
+                        rsiEnabled: !!(data.rsi_settings && data.rsi_settings.enabled),
+                        rsiPeriod: data.rsi_settings?.period ?? rsiPeriod,
+                        rsiOverbought: data.rsi_settings?.overbought ?? rsiOverbought,
+                        rsiOversold: data.rsi_settings?.oversold ?? rsiOversold,
+                        noEntryWindow: !!data.use_no_entry_window,
+                        lots: data.lots || lots,
+                        slPoints: data.sl_points || slPoints,
+                        targetPoints: data.target_points || targetPoints,
+                        totalTrades: data.total_trades || 0,
+                        slHits: data.sl_hits || 0,
+                        targetHits: data.target_hits || 0,
+                        winRate: data.win_rate || 0,
+                        totalProfit: data.total_profit || 0,
+                        trades: data.trades || []
+                    });
+                    if (backtestResultsTitle && data.days_covered != null && data.days_requested != null && data.days_covered < data.days_requested) {
+                        backtestResultsTitle.textContent = `📊 Backtest Results (${periodLabel} - ${timeframe} · ${data.days_covered} days data)`;
+                    }
+                    addToStrategyLog(`✅ Backtest completed: ${data.total_trades} trades, ${data.win_rate}% win rate, ${data.total_profit >= 0 ? '+' : ''}${data.total_profit.toFixed(2)} profit`);
+                } else {
+                    lastBacktestResult = null;
+                    const errorMsg = data.error || data.details || 'Unknown error';
+                    backtestStats.innerHTML = `<div style="padding: 20px; color: #ef4444;">
+                        <div style="font-weight: 600; margin-bottom: 10px;">❌ Backtest failed</div>
+                        <div style="font-size: 13px;">${errorMsg}</div>
+                        ${data.details ? `<div style="font-size: 11px; color: #9ca3af; margin-top: 10px; font-family: monospace;">${JSON.stringify(data.details)}</div>` : ''}
+                    </div>`;
+                    addToStrategyLog(`❌ Backtest failed: ${errorMsg}`);
+                }
+            } catch (error) {
+                console.error('Backtest error:', error);
+                lastBacktestResult = null;
+                let errorMsg = error.message;
+                
+                // Try to get more details from error
+                if (error.message && error.message.includes('JSON')) {
+                    errorMsg = 'Server se invalid response mila. Server logs check karein ya server restart karein.';
+                }
+                
+                backtestStats.innerHTML = `<div style="padding: 20px; color: #ef4444;">
+                    <div style="font-weight: 600; margin-bottom: 10px;">❌ Backtest Error</div>
+                    <div style="font-size: 13px;">${errorMsg}</div>
+                    <div style="font-size: 11px; color: #9ca3af; margin-top: 10px;">Check browser console (F12) for more details</div>
+                </div>`;
+                addToStrategyLog(`❌ Backtest error: ${errorMsg}`);
+            }
+        }
+
+        // Strategy Functions
+        function activateStrategy(strategyType) {
+            alert(`✅ ${strategyType} strategy activate ho gayi hai! (Demo mode - actual trading abhi implement nahi hui)`);
+        }
+
+        function testStrategy(strategyType) {
+            alert(`🧪 ${strategyType} strategy test chal raha hai... (Demo mode - actual testing abhi implement nahi hui)`);
+        }
+
+        // App bootstrap
+        window.addEventListener('DOMContentLoaded', () => {
+            loadBacktestReports();
+            renderAllBacktestReports();
+            try { syncBacktestPageStrategyUI(); } catch (e) {}
+
+            document.getElementById('appLayout').classList.add('active');
+            setTimeout(() => {
+                try {
+                    initChart();
+                } catch (error) {
+                    console.error('Chart initialization error:', error);
+                }
+                loadTradeExchangeAccounts();
+                loadOrders();
+                loadPositions();
+            }, 100);
+        });
+    </script>
+</body>
+</html>
