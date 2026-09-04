@@ -21,6 +21,7 @@ import re
 import secrets
 import smtplib
 import ssl
+import threading
 from functools import wraps
 from email.message import EmailMessage
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -76,11 +77,30 @@ client = CryptoAPIClient(API_KEY, SECRET_KEY)
 
 
 DB_READY = True
-try:
-    init_database()
-except Exception as e:
-    DB_READY = False
-    print(f"⚠️ Database initialization failed: {e}")
+
+
+def _bootstrap_database():
+    """
+    Django ORM sync hai aur agar current thread mein event loop chal raha ho to
+    `SynchronousOnlyOperation` phenk deta hai. Merged backend (backend/main.py)
+    ko uvicorn event loop ke andar import karta hai, isliye seedha yahan call
+    karne par tables banne se pehle hi fail ho jaata tha — aur DB_READY False
+    hone se saare auth endpoints band ho jaate the.
+
+    Alag thread mein koi running loop nahi hota, isliye guard trigger nahi hota.
+    Standalone Flask run par bhi ye bilkul theek chalta hai.
+    """
+    global DB_READY
+    try:
+        init_database()
+    except Exception as exc:
+        DB_READY = False
+        print(f"⚠️ Database initialization failed: {exc}")
+
+
+_db_thread = threading.Thread(target=_bootstrap_database, name="db-init")
+_db_thread.start()
+_db_thread.join()
 
 
 SUPPORTED_EXCHANGES = {"delta", "binance", "bybit"}
