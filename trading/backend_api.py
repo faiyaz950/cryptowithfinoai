@@ -11,13 +11,14 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-from fetch_trading_data import CryptoAPIClient, DeltaExchangeClient
+from fetch_trading_data import BASE_URL, CryptoAPIClient, DeltaExchangeClient
 import os
 import base64
 import hashlib
 import importlib
 import json
 import re
+import requests
 import secrets
 import smtplib
 import ssl
@@ -802,6 +803,164 @@ def screener_candles():
         })
     except Exception as e:
         print(f"❌ Screener error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+OPTIONS_CACHE_TTL = 60  # seconds
+_options_cache = {}
+
+
+def _parse_option_expiry(symbol):
+    """`C-BTC-80000-070926` ka aakhri hissa DDMMYY hai -> datetime (UTC)."""
+    try:
+        tail = symbol.rsplit('-', 1)[-1]
+        if len(tail) != 6 or not tail.isdigit():
+            return None
+        day, month, year = int(tail[:2]), int(tail[2:4]), 2000 + int(tail[4:])
+        # Delta ke options 12:00 UTC par settle hote hain.
+        return datetime(year, month, day, 12, 0, 0)
+    except Exception:
+        return None
+
+
+def _fnum(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fetch_option_tickers(option_type):
+    """Delta se call ya put options ke tickers — 60s cache ke saath."""
+    contract_type = 'call_options' if option_type == 'call' else 'put_options'
+    hit = _options_cache.get(contract_type)
+    now = time.time()
+    if hit and (now - hit[0]) < OPTIONS_CACHE_TTL:
+        return hit[1]
+
+    res = requests.get(
+        f"{BASE_URL}/v2/tickers",
+        params={'contract_types': contract_type},
+        timeout=30,
+    )
+    res.raise_for_status()
+    rows = res.json().get('result') or []
+    _options_cache[contract_type] = (now, rows)
+    return rows
+
+
+@app.route('/api/options/chain', methods=['GET'])
+def options_chain():
+    """
+    Directional option buying ke liye option chain + strike selection.
+
+    Strategy A (OTM directional) fixed "5% OTM" nahi, balki Delta band se strike
+    chunti hai, aur liquidity filters lagati hai. Ye endpoint wahi kaam karta hai:
+    candidates deta hai aur ek `selected` pick bhi, taaki UI ko dobara logic na
+    likhna pade.
+    """
+    try:
+        underlying = (request.args.get('underlying') or 'BTC').upper()
+        option_type = (request.args.get('option_type') or 'call').lower()
+        if option_type not in ('call', 'put'):
+            return jsonify({'success': False, 'error': "option_type must be 'call' or 'put'"}), 400
+
+        min_delta = abs(float(request.args.get('min_delta', 0.25)))
+        max_delta = abs(float(request.args.get('max_delta', 0.35)))
+        if min_delta > max_delta:
+            min_delta, max_delta = max_delta, min_delta
+
+        # Liquidity filters — doc: tight bid/ask, good volume, no abnormal premium.
+        max_spread_pct = float(request.args.get('max_spread_pct', 5))
+        min_oi = float(request.args.get('min_oi', 0))
+        # Expiry itni door honi chahiye ki time-exit rule (2h pehle) sensible rahe.
+        min_hours = float(request.args.get('min_hours_to_expiry', 4))
+
+        rows = _fetch_option_tickers(option_type)
+        now = datetime.utcnow()
+
+        candidates = []
+        for r in rows:
+            if str(r.get('underlying_asset_symbol', '')).upper() != underlying:
+                continue
+
+            greeks = r.get('greeks') or {}
+            delta = _fnum(greeks.get('delta'))
+            if delta is None:
+                continue
+
+            expiry = _parse_option_expiry(str(r.get('symbol', '')))
+            hours_left = (expiry - now).total_seconds() / 3600 if expiry else None
+
+            quotes = r.get('quotes') or {}
+            bid = _fnum(quotes.get('best_bid'))
+            ask = _fnum(quotes.get('best_ask'))
+            mid = (bid + ask) / 2 if bid and ask else None
+            spread_pct = ((ask - bid) / mid * 100) if (mid and mid > 0) else None
+
+            entry = {
+                'symbol': r.get('symbol'),
+                'strike': _fnum(r.get('strike_price')),
+                'spot': _fnum(greeks.get('spot')) or _fnum(r.get('spot_price')),
+                'expiry': expiry.isoformat() + 'Z' if expiry else None,
+                'hours_to_expiry': round(hours_left, 2) if hours_left is not None else None,
+                # Puts par delta negative hota hai; comparison ke liye magnitude use karte hain.
+                'delta': round(delta, 4),
+                'abs_delta': round(abs(delta), 4),
+                'iv': _fnum(quotes.get('mark_iv')) or _fnum(r.get('mark_vol')),
+                'premium': _fnum(r.get('mark_price')),
+                'best_bid': bid,
+                'best_ask': ask,
+                'spread_pct': round(spread_pct, 3) if spread_pct is not None else None,
+                'oi': _fnum(r.get('oi'), 0),
+                'oi_value_usd': _fnum(r.get('oi_value_usd'), 0),
+                'volume': _fnum(r.get('volume'), 0),
+                'turnover_usd': _fnum(r.get('turnover_usd'), 0),
+            }
+
+            # Har filter ka reason rakhte hain taaki UI bata sake kyun reject hua.
+            reasons = []
+            if not (min_delta <= entry['abs_delta'] <= max_delta):
+                reasons.append('delta out of band')
+            if hours_left is not None and hours_left < min_hours:
+                reasons.append('expiry too close')
+            if spread_pct is None:
+                reasons.append('no two-sided quote')
+            elif spread_pct > max_spread_pct:
+                reasons.append('spread too wide')
+            if entry['oi'] < min_oi:
+                reasons.append('open interest too low')
+
+            entry['rejected_for'] = reasons
+            candidates.append(entry)
+
+        eligible = [c for c in candidates if not c['rejected_for']]
+        # Sabse liquid pehle — doc ka filter "high option volume + tight spread" hai.
+        eligible.sort(key=lambda c: (c['turnover_usd'], -(c['spread_pct'] or 999)), reverse=True)
+
+        in_band = [c for c in candidates if 'delta out of band' not in c['rejected_for']]
+        in_band.sort(key=lambda c: c['turnover_usd'], reverse=True)
+
+        return jsonify({
+            'success': True,
+            'underlying': underlying,
+            'option_type': option_type,
+            'delta_band': [min_delta, max_delta],
+            'filters': {
+                'max_spread_pct': max_spread_pct,
+                'min_oi': min_oi,
+                'min_hours_to_expiry': min_hours,
+            },
+            'selected': eligible[0] if eligible else None,
+            'candidates': eligible[:12],
+            # Band mein the par filter par atke — UI inhe "kyun nahi liya" dikha sakta hai.
+            'rejected': [c for c in in_band if c['rejected_for']][:12],
+            'total_scanned': len(candidates),
+        })
+    except Exception as e:
+        print(f"❌ Options chain error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
