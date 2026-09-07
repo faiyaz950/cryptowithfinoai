@@ -970,6 +970,172 @@ def options_chain():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _option_entry(row, now):
+    """Ticker row -> normalised contract dict (chain aur spread dono use karte hain)."""
+    greeks = row.get('greeks') or {}
+    delta = _fnum(greeks.get('delta'))
+    if delta is None:
+        return None
+    expiry = _parse_option_expiry(str(row.get('symbol', '')))
+    hours_left = (expiry - now).total_seconds() / 3600 if expiry else None
+    quotes = row.get('quotes') or {}
+    bid = _fnum(quotes.get('best_bid'))
+    ask = _fnum(quotes.get('best_ask'))
+    mid = (bid + ask) / 2 if bid and ask else None
+    spread_pct = ((ask - bid) / mid * 100) if (mid and mid > 0) else None
+    return {
+        'symbol': row.get('symbol'),
+        'strike': _fnum(row.get('strike_price')),
+        'spot': _fnum(greeks.get('spot')) or _fnum(row.get('spot_price')),
+        'expiry': expiry.isoformat() + 'Z' if expiry else None,
+        'expiry_key': str(row.get('symbol', '')).rsplit('-', 1)[-1],
+        'hours_to_expiry': round(hours_left, 2) if hours_left is not None else None,
+        'delta': round(delta, 4),
+        'abs_delta': round(abs(delta), 4),
+        'theta': _fnum(greeks.get('theta')),
+        'vega': _fnum(greeks.get('vega')),
+        'gamma': _fnum(greeks.get('gamma')),
+        'iv': _fnum(quotes.get('mark_iv')) or _fnum(row.get('mark_vol')),
+        'premium': _fnum(row.get('mark_price')),
+        'best_bid': bid,
+        'best_ask': ask,
+        'spread_pct': round(spread_pct, 3) if spread_pct is not None else None,
+        'oi': _fnum(row.get('oi'), 0),
+        'volume': _fnum(row.get('volume'), 0),
+        'turnover_usd': _fnum(row.get('turnover_usd'), 0),
+    }
+
+
+@app.route('/api/options/spread', methods=['GET'])
+def options_spread():
+    """
+    Debit spread (Strategy B) ke liye do legs chunta hai.
+
+    Bull call: near-the-money call BUY + usse `width` upar wali call SELL.
+    Bear put:  near-the-money put BUY  + usse `width` neeche wali put SELL.
+
+    Dono legs ek hi expiry ke hone chahiye, warna wo spread hai hi nahi. Debit
+    marketable prices se nikalta hai (long ka ask do, short ka bid lo) kyunki
+    asli mein wahi bharna padta hai — mark-based number optimistic hota hai.
+    """
+    try:
+        underlying = (request.args.get('underlying') or 'BTC').upper()
+        option_type = (request.args.get('option_type') or 'call').lower()
+        if option_type not in ('call', 'put'):
+            return jsonify({'success': False, 'error': "option_type must be 'call' or 'put'"}), 400
+
+        width = float(request.args.get('width', 2000))
+        if width <= 0:
+            return jsonify({'success': False, 'error': 'width must be greater than 0'}), 400
+        # Long leg near-the-money hota hai; doc ka example spot par hi buy karta hai.
+        long_delta = abs(float(request.args.get('long_delta', 0.5)))
+        max_spread_pct = float(request.args.get('max_spread_pct', 8))
+        min_hours = float(request.args.get('min_hours_to_expiry', 4))
+        min_oi = float(request.args.get('min_oi', 0))
+
+        rows = _fetch_option_tickers(option_type)
+        now = datetime.utcnow()
+
+        by_expiry = {}
+        for r in rows:
+            if str(r.get('underlying_asset_symbol', '')).upper() != underlying:
+                continue
+            entry = _option_entry(r, now)
+            if not entry or entry['strike'] is None:
+                continue
+            if entry['hours_to_expiry'] is None or entry['hours_to_expiry'] < min_hours:
+                continue
+            by_expiry.setdefault(entry['expiry_key'], []).append(entry)
+
+        def tradable(c):
+            return (
+                c['best_bid'] and c['best_ask']
+                and c['spread_pct'] is not None and c['spread_pct'] <= max_spread_pct
+                and c['oi'] >= min_oi
+            )
+
+        spreads = []
+        for expiry_key, legs in by_expiry.items():
+            usable = [c for c in legs if tradable(c)]
+            if len(usable) < 2:
+                continue
+
+            # Long leg: target delta ke sabse kareeb.
+            long_leg = min(usable, key=lambda c: abs(c['abs_delta'] - long_delta))
+            target_strike = long_leg['strike'] + width if option_type == 'call' else long_leg['strike'] - width
+            # Short leg: sahi taraf ka, target strike ke sabse kareeb.
+            if option_type == 'call':
+                side = [c for c in usable if c['strike'] > long_leg['strike']]
+            else:
+                side = [c for c in usable if c['strike'] < long_leg['strike']]
+            if not side:
+                continue
+            short_leg = min(side, key=lambda c: abs(c['strike'] - target_strike))
+            actual_width = abs(short_leg['strike'] - long_leg['strike'])
+            if actual_width <= 0:
+                continue
+
+            # Marketable: long ka ask bharo, short ka bid milta hai.
+            debit = long_leg['best_ask'] - short_leg['best_bid']
+            debit_mark = (long_leg['premium'] or 0) - (short_leg['premium'] or 0)
+            if debit <= 0:
+                continue
+            max_profit = actual_width - debit
+            if max_profit <= 0:
+                continue
+
+            breakeven = (
+                long_leg['strike'] + debit if option_type == 'call'
+                else long_leg['strike'] - debit
+            )
+
+            def net(field):
+                a = long_leg.get(field)
+                b = short_leg.get(field)
+                return round(a - b, 6) if a is not None and b is not None else None
+
+            spreads.append({
+                'expiry': long_leg['expiry'],
+                'hours_to_expiry': long_leg['hours_to_expiry'],
+                'spot': long_leg['spot'],
+                'long_leg': long_leg,
+                'short_leg': short_leg,
+                'width': actual_width,
+                'requested_width': width,
+                'net_debit': round(debit, 4),
+                'net_debit_mark': round(debit_mark, 4),
+                'max_loss': round(debit, 4),
+                'max_profit': round(max_profit, 4),
+                'risk_reward': round(max_profit / debit, 3) if debit else None,
+                'breakeven': round(breakeven, 2),
+                # Spread ke net greeks — short leg long ka theta kaafi kaat deta hai,
+                # yahi debit spread ka naked buying par sabse bada fayda hai.
+                'net_delta': net('delta'),
+                'net_theta': net('theta'),
+                'net_vega': net('vega'),
+                'net_gamma': net('gamma'),
+                'liquidity_usd': round((long_leg['turnover_usd'] or 0) + (short_leg['turnover_usd'] or 0), 2),
+            })
+
+        # Behtar risk/reward pehle, phir liquidity.
+        spreads.sort(key=lambda s: ((s['risk_reward'] or 0), s['liquidity_usd']), reverse=True)
+
+        return jsonify({
+            'success': True,
+            'underlying': underlying,
+            'option_type': option_type,
+            'strategy': 'bull_call_spread' if option_type == 'call' else 'bear_put_spread',
+            'requested_width': width,
+            'long_delta_target': long_delta,
+            'selected': spreads[0] if spreads else None,
+            'alternatives': spreads[1:6],
+            'expiries_scanned': len(by_expiry),
+        })
+    except Exception as e:
+        print(f"❌ Options spread error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/market-info', methods=['GET'])
 def get_market_info():
     """Market information fetch karta hai"""
