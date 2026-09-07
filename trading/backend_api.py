@@ -909,6 +909,12 @@ def options_chain():
                 # Puts par delta negative hota hai; comparison ke liye magnitude use karte hain.
                 'delta': round(delta, 4),
                 'abs_delta': round(abs(delta), 4),
+                # Theta per din hai (USD), vega per 1% IV point, gamma per $1 spot.
+                # OTM buying mein theta hi sabse bada risk hai, isliye ye zaroori hain.
+                'theta': _fnum(greeks.get('theta')),
+                'vega': _fnum(greeks.get('vega')),
+                'gamma': _fnum(greeks.get('gamma')),
+                'rho': _fnum(greeks.get('rho')),
                 'iv': _fnum(quotes.get('mark_iv')) or _fnum(r.get('mark_vol')),
                 'premium': _fnum(r.get('mark_price')),
                 'best_bid': bid,
