@@ -1278,6 +1278,185 @@ def options_condor():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _max_pain(strikes_oi):
+    """
+    Max pain — wo strike jahan expiry par option kharidne walon ki total value
+    sabse kam bachti hai (writers ka nuksaan sabse kam).
+
+    Har candidate strike K par: us se neeche wale saare calls in-the-money honge
+    aur upar wale saare puts. Dono ka total intrinsic value jodte hain, aur jahan
+    ye sabse kam ho wahi max pain hai. Traders ise expiry ke aas-paas dekhte hain
+    — ye koi niyam nahi, sirf ek widely-watched level hai.
+    """
+    if not strikes_oi:
+        return None
+    best_strike, best_value = None, None
+    for k in strikes_oi:
+        total = 0.0
+        for strike, data in strikes_oi.items():
+            if strike < k:
+                total += (k - strike) * data['call_oi']
+            elif strike > k:
+                total += (strike - k) * data['put_oi']
+        if best_value is None or total < best_value:
+            best_strike, best_value = k, total
+    return {'strike': best_strike, 'value': round(best_value, 2)}
+
+
+@app.route('/api/options/analytics', methods=['GET'])
+def options_analytics():
+    """
+    Poore option chain ka aggregate view — IV smile, term structure, open interest
+    distribution, put/call ratio aur max pain.
+
+    Ye batata hai ki market khud kya soch raha hai: dar kis taraf hai (skew),
+    paisa kis strike par pada hai (OI), aur premium mehnga hai ya sasta (IV).
+    Iske bina Iron Condor bechna ya OTM buy karna andaaza hi rehta hai.
+    """
+    try:
+        underlying = (request.args.get('underlying') or 'BTC').upper()
+        now = datetime.utcnow()
+
+        legs = {'call': [], 'put': []}
+        for opt_type in ('call', 'put'):
+            for r in _fetch_option_tickers(opt_type):
+                if str(r.get('underlying_asset_symbol', '')).upper() != underlying:
+                    continue
+                entry = _option_entry(r, now)
+                if not entry or entry['strike'] is None or entry['hours_to_expiry'] is None:
+                    continue
+                if entry['hours_to_expiry'] <= 0:
+                    continue
+                legs[opt_type].append(entry)
+
+        if not legs['call'] and not legs['put']:
+            return jsonify({'success': False, 'error': f'No live options for {underlying}'}), 404
+
+        spot = next((c['spot'] for c in legs['call'] + legs['put'] if c['spot']), None)
+
+        # ── Expiry ke hisaab se todo ───────────────────────
+        expiries = {}
+        for opt_type, items in legs.items():
+            for c in items:
+                key = c['expiry_key']
+                slot = expiries.setdefault(key, {
+                    'expiry_key': key,
+                    'expiry': c['expiry'],
+                    'hours_to_expiry': c['hours_to_expiry'],
+                    'strikes': {},
+                    'call_oi': 0.0, 'put_oi': 0.0,
+                    'call_volume': 0.0, 'put_volume': 0.0,
+                })
+                strike = slot['strikes'].setdefault(c['strike'], {
+                    'strike': c['strike'],
+                    'call_iv': None, 'put_iv': None,
+                    'call_oi': 0.0, 'put_oi': 0.0,
+                })
+                strike[f'{opt_type}_iv'] = c['iv']
+                strike[f'{opt_type}_oi'] += c['oi'] or 0
+                slot[f'{opt_type}_oi'] += c['oi'] or 0
+                slot[f'{opt_type}_volume'] += c['volume'] or 0
+
+        chains = []
+        for key, slot in expiries.items():
+            strikes = dict(sorted(slot['strikes'].items()))
+            # ATM = spot ke sabse kareeb ka strike; uski IV hi "market ka dar" hai.
+            atm_strike = min(strikes, key=lambda k: abs(k - spot)) if (strikes and spot) else None
+            atm = strikes.get(atm_strike) if atm_strike else None
+            atm_ivs = [v for v in ((atm or {}).get('call_iv'), (atm or {}).get('put_iv')) if v]
+            atm_iv = sum(atm_ivs) / len(atm_ivs) if atm_ivs else None
+
+            chains.append({
+                'expiry_key': key,
+                'expiry': slot['expiry'],
+                'hours_to_expiry': slot['hours_to_expiry'],
+                'atm_strike': atm_strike,
+                'atm_iv': atm_iv,
+                'call_oi': round(slot['call_oi'], 2),
+                'put_oi': round(slot['put_oi'], 2),
+                'call_volume': round(slot['call_volume'], 2),
+                'put_volume': round(slot['put_volume'], 2),
+                'pcr_oi': round(slot['put_oi'] / slot['call_oi'], 3) if slot['call_oi'] else None,
+                'pcr_volume': round(slot['put_volume'] / slot['call_volume'], 3) if slot['call_volume'] else None,
+                'max_pain': _max_pain(strikes),
+                'strikes': list(strikes.values()),
+            })
+
+        chains.sort(key=lambda c: c['hours_to_expiry'])
+
+        total_call_oi = sum(c['call_oi'] for c in chains)
+        total_put_oi = sum(c['put_oi'] for c in chains)
+        total_call_vol = sum(c['call_volume'] for c in chains)
+        total_put_vol = sum(c['put_volume'] for c in chains)
+
+        return jsonify({
+            'success': True,
+            'underlying': underlying,
+            'spot': spot,
+            'totals': {
+                'call_oi': round(total_call_oi, 2),
+                'put_oi': round(total_put_oi, 2),
+                'pcr_oi': round(total_put_oi / total_call_oi, 3) if total_call_oi else None,
+                'call_volume': round(total_call_vol, 2),
+                'put_volume': round(total_put_vol, 2),
+                'pcr_volume': round(total_put_vol / total_call_vol, 3) if total_call_vol else None,
+                'contracts': len(legs['call']) + len(legs['put']),
+            },
+            # Term structure: har expiry ki ATM IV — aage ka dar vs abhi ka.
+            'term_structure': [
+                {'expiry_key': c['expiry_key'], 'hours_to_expiry': c['hours_to_expiry'], 'atm_iv': c['atm_iv']}
+                for c in chains
+            ],
+            'chains': chains,
+        })
+    except Exception as e:
+        print(f"❌ Options analytics error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/funding', methods=['GET'])
+def funding_rates():
+    """
+    Perpetuals ka funding rate — har kuch ghante ek side doosre ko fees deti hai.
+    Positive matlab long walon ko dena pad raha hai (bheed upar ke daaon par),
+    negative matlab ulta. Ye crowd positioning ka seedha signal hai.
+    """
+    try:
+        raw = (request.args.get('symbols') or '').strip()
+        wanted = {to_delta_symbol(s.strip()) for s in raw.split(',') if s.strip()} if raw else None
+
+        res = requests.get(
+            f"{BASE_URL}/v2/tickers",
+            params={'contract_types': 'perpetual_futures'},
+            timeout=30,
+        )
+        res.raise_for_status()
+
+        rows = []
+        for r in res.json().get('result') or []:
+            symbol = str(r.get('symbol') or '')
+            if wanted is not None and symbol not in wanted:
+                continue
+            if wanted is None and not symbol.endswith('USD'):
+                continue
+            rows.append({
+                'symbol': symbol,
+                'mark_price': _fnum(r.get('mark_price')),
+                # Delta percent mein deta hai (0.01 = 0.01%).
+                'funding_rate': _fnum(r.get('funding_rate')),
+                'mark_basis': _fnum(r.get('mark_basis')),
+                'oi_value_usd': _fnum(r.get('oi_value_usd'), 0),
+                'turnover_usd': _fnum(r.get('turnover_usd'), 0),
+                'change_24h': _fnum(r.get('mark_change_24h')),
+            })
+
+        rows.sort(key=lambda x: abs(x['funding_rate'] or 0), reverse=True)
+        return jsonify({'success': True, 'count': len(rows), 'rates': rows[:60]})
+    except Exception as e:
+        print(f"❌ Funding error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/market-info', methods=['GET'])
 def get_market_info():
     """Market information fetch karta hai"""
