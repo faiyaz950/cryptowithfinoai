@@ -1136,6 +1136,148 @@ def options_spread():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/options/condor', methods=['GET'])
+def options_condor():
+    """
+    Iron Condor (Strategy C) ke chaar legs.
+
+    SELL call + BUY usse door call (upar ka wing), SELL put + BUY usse door put
+    (neeche ka wing) — sab ek hi expiry mein. Short legs ~0.15-0.20 delta par,
+    long protection ~0.05-0.10 par, jaisa spec kehta hai.
+
+    Credit marketable prices se: shorts ka bid milta hai, longs ka ask bharna
+    padta hai. Max loss = bada wing - credit (dono wings ek saath hit nahi hote).
+    """
+    try:
+        underlying = (request.args.get('underlying') or 'BTC').upper()
+        short_delta = abs(float(request.args.get('short_delta', 0.175)))
+        long_delta = abs(float(request.args.get('long_delta', 0.075)))
+        if long_delta >= short_delta:
+            return jsonify({'success': False, 'error': 'long_delta must be smaller than short_delta'}), 400
+
+        max_spread_pct = float(request.args.get('max_spread_pct', 10))
+        min_hours = float(request.args.get('min_hours_to_expiry', 12))
+        min_oi = float(request.args.get('min_oi', 0))
+
+        now = datetime.utcnow()
+        by_expiry = {}
+        for opt_type in ('call', 'put'):
+            for r in _fetch_option_tickers(opt_type):
+                if str(r.get('underlying_asset_symbol', '')).upper() != underlying:
+                    continue
+                entry = _option_entry(r, now)
+                if not entry or entry['strike'] is None:
+                    continue
+                if entry['hours_to_expiry'] is None or entry['hours_to_expiry'] < min_hours:
+                    continue
+                if not (entry['best_bid'] and entry['best_ask']):
+                    continue
+                if entry['spread_pct'] is None or entry['spread_pct'] > max_spread_pct:
+                    continue
+                if entry['oi'] < min_oi:
+                    continue
+                entry['option_type'] = opt_type
+                by_expiry.setdefault(entry['expiry_key'], {'call': [], 'put': []})[opt_type].append(entry)
+
+        condors = []
+        for expiry_key, legs in by_expiry.items():
+            calls, puts = legs['call'], legs['put']
+            if len(calls) < 2 or len(puts) < 2:
+                continue
+
+            def nearest(items, target):
+                return min(items, key=lambda c: abs(c['abs_delta'] - target))
+
+            short_call = nearest(calls, short_delta)
+            short_put = nearest(puts, short_delta)
+            # Protection short strike se aur door honi chahiye, warna wing hi nahi banta.
+            outer_calls = [c for c in calls if c['strike'] > short_call['strike']]
+            outer_puts = [p for p in puts if p['strike'] < short_put['strike']]
+            if not outer_calls or not outer_puts:
+                continue
+            long_call = nearest(outer_calls, long_delta)
+            long_put = nearest(outer_puts, long_delta)
+
+            # Short call short put ke upar hona chahiye, warna ye condor nahi hai.
+            if short_call['strike'] <= short_put['strike']:
+                continue
+
+            call_wing = long_call['strike'] - short_call['strike']
+            put_wing = short_put['strike'] - long_put['strike']
+            if call_wing <= 0 or put_wing <= 0:
+                continue
+
+            credit = (
+                short_call['best_bid'] + short_put['best_bid']
+                - long_call['best_ask'] - long_put['best_ask']
+            )
+            credit_mark = (
+                (short_call['premium'] or 0) + (short_put['premium'] or 0)
+                - (long_call['premium'] or 0) - (long_put['premium'] or 0)
+            )
+            if credit <= 0:
+                continue
+
+            # Dono wings ek saath test nahi hote — max loss bade wing par bandhta hai.
+            max_loss = max(call_wing, put_wing) - credit
+            if max_loss <= 0:
+                continue
+
+            def net(field):
+                vals = [
+                    short_call.get(field), short_put.get(field),
+                    long_call.get(field), long_put.get(field),
+                ]
+                if any(v is None for v in vals):
+                    return None
+                # Shorts negative, longs positive.
+                return round(-vals[0] - vals[1] + vals[2] + vals[3], 6)
+
+            condors.append({
+                'expiry': short_call['expiry'],
+                'hours_to_expiry': short_call['hours_to_expiry'],
+                'spot': short_call['spot'],
+                'short_call': short_call,
+                'long_call': long_call,
+                'short_put': short_put,
+                'long_put': long_put,
+                'call_wing': call_wing,
+                'put_wing': put_wing,
+                'net_credit': round(credit, 4),
+                'net_credit_mark': round(credit_mark, 4),
+                'max_profit': round(credit, 4),
+                'max_loss': round(max_loss, 4),
+                'risk_reward': round(credit / max_loss, 3) if max_loss else None,
+                'breakeven_low': round(short_put['strike'] - credit, 2),
+                'breakeven_high': round(short_call['strike'] + credit, 2),
+                'profit_zone_low': short_put['strike'],
+                'profit_zone_high': short_call['strike'],
+                'net_delta': net('delta'),
+                'net_theta': net('theta'),
+                'net_vega': net('vega'),
+                'net_gamma': net('gamma'),
+                'liquidity_usd': round(sum(
+                    (c['turnover_usd'] or 0) for c in (short_call, long_call, short_put, long_put)
+                ), 2),
+            })
+
+        # Credit-to-risk pehle, phir liquidity.
+        condors.sort(key=lambda c: ((c['risk_reward'] or 0), c['liquidity_usd']), reverse=True)
+
+        return jsonify({
+            'success': True,
+            'underlying': underlying,
+            'short_delta_target': short_delta,
+            'long_delta_target': long_delta,
+            'selected': condors[0] if condors else None,
+            'alternatives': condors[1:6],
+            'expiries_scanned': len(by_expiry),
+        })
+    except Exception as e:
+        print(f"❌ Iron condor error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/market-info', methods=['GET'])
 def get_market_info():
     """Market information fetch karta hai"""
