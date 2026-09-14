@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-from fetch_trading_data import BASE_URL, CryptoAPIClient, DeltaExchangeClient
+from fetch_trading_data import BASE_URL, CryptoAPIClient, DeltaExchangeClient, to_delta_symbol
 import os
 import base64
 import hashlib
