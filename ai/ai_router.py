@@ -105,6 +105,20 @@ MODEL_DESCRIPTIONS = {
 }
 
 VALID_MODEL_IDS = {"auto", "gemini", "grok", "groq", "openai", "claude"}
+
+# Desk sirf Gemini par chalta hai — Google Search grounding ke saath, jo live
+# market questions par baaki models se behtar hai, aur ek hi model hone se
+# jawab ka lehja aur quality har baar ek jaisi rehti hai. False kar dene par
+# purana multi-model routing wapas aa jayega.
+GEMINI_ONLY = True
+
+
+def _normalize_model(preferred_model: Optional[str]) -> str:
+    """Gemini-only mode mein har request Gemini par jaati hai."""
+    if GEMINI_ONLY:
+        return "gemini"
+    model = _normalize_model(preferred_model)
+    return model if model in VALID_MODEL_IDS else "auto"
 VISION_MODEL_IDS = {"auto", "gemini", "openai"}
 
 
@@ -254,6 +268,14 @@ class ArjunAI:
         }.get(agent, False)
 
     def get_available_models(self, user_type: str = "free") -> list[dict]:
+        if GEMINI_ONLY:
+            return [{
+                "id": "gemini",
+                "label": MODEL_NAMES["gemini"],
+                "description": MODEL_DESCRIPTIONS["gemini"],
+                "available": self._is_configured("gemini"),
+            }]
+
         models = [{
             "id": "auto",
             "label": "Auto (Smart)",
@@ -292,9 +314,7 @@ class ArjunAI:
         prefix = "_stream_" if streaming else "_try_"
         method_map = {name: getattr(self, prefix + name) for name in fallback_order}
 
-        model = (preferred_model or "auto").strip().lower()
-        if model not in VALID_MODEL_IDS:
-            model = "auto"
+        model = _normalize_model(preferred_model)
 
         if model == "claude" and user_type != "pro":
             return []
@@ -306,6 +326,11 @@ class ArjunAI:
             return configured
 
         preferred = [(n, fn) for n, fn in configured if n == model]
+        if GEMINI_ONLY:
+            # Chup-chaap doosre provider par mat jao — Gemini ki apni multi-key
+            # rotation quota sambhalti hai, aur silent switch se jawab ka lehja
+            # aur grounding dono badal jaate hain.
+            return preferred
         rest = [(n, fn) for n, fn in configured if n != model]
         return preferred + rest
 
@@ -795,12 +820,12 @@ class ArjunAI:
 
         topic = detect_topic(question)
         market_context = build_market_context(question)
-        model_pref = (preferred_model or "auto").strip().lower()
+        model_pref = _normalize_model(preferred_model)
 
         if file_data:
             if model_pref not in VISION_MODEL_IDS:
                 return {
-                    "answer": "Image/file analysis ke liye **Gemini** ya **OpenAI** model choose karein (Auto bhi chalega).",
+                    "answer": "Image/file analysis abhi available nahi — Gemini configure nahi hai.",
                     "model": "Error",
                     "topic": topic,
                     "cached": False,
@@ -845,7 +870,7 @@ class ArjunAI:
                         break
 
             return {
-                "answer": "Image/file process karne mein error aaya. Gemini quota ho to **OpenAI** model try karein.",
+                "answer": "Image/file process karne mein error aaya. Thodi der baad dobara try karein.",
                 "model": "Error",
                 "topic": topic,
                 "cached": False,
@@ -856,7 +881,7 @@ class ArjunAI:
         if not agents:
             label = MODEL_NAMES.get(model_pref, model_pref)
             return {
-                "answer": f"**{label}** abhi configure nahi hai ya available nahi. Auto model try karein.",
+                "answer": f"**{label}** abhi configure nahi hai — backend mein GEMINI_API_KEY set karein.",
                 "model": "Error",
                 "topic": topic,
                 "cached": False,
@@ -916,11 +941,11 @@ class ArjunAI:
 
         if market_context is None:
             market_context = build_market_context(question)
-        model_pref = (preferred_model or "auto").strip().lower()
+        model_pref = _normalize_model(preferred_model)
 
         if file_data:
             if model_pref not in VISION_MODEL_IDS:
-                yield "Image/file analysis ke liye **Gemini** ya **OpenAI** model choose karein (Auto bhi chalega).", "Error", None
+                yield "Image/file analysis abhi available nahi — Gemini configure nahi hai.", "Error", None
                 return
 
             file_agents = []
@@ -960,13 +985,13 @@ class ArjunAI:
                     if model_pref != "auto":
                         break
 
-            yield "Image/file process karne mein error aaya. Gemini quota ho to **OpenAI** model try karein.", "Error", None
+            yield "Image/file process karne mein error aaya. Thodi der baad dobara try karein.", "Error", None
             return
 
         agents = self._build_agent_list(preferred_model, user_type, streaming=True)
         if not agents:
             label = MODEL_NAMES.get(model_pref, model_pref)
-            yield f"**{label}** abhi configure nahi hai ya available nahi. Auto model try karein.", "Error", None
+            yield f"**{label}** abhi configure nahi hai — backend mein GEMINI_API_KEY set karein.", "Error", None
             return
 
         errors = []

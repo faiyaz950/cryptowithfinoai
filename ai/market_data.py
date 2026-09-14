@@ -1,4 +1,4 @@
-"""Live market data via Yahoo Finance (stocks/indices) and CoinGecko (crypto)."""
+"""Live market data via Delta Exchange (crypto), Yahoo Finance (stocks) and CoinGecko (fallback)."""
 
 import re
 import time
@@ -278,7 +278,102 @@ def build_market_overview_context() -> str:
     return "\n".join(lines)
 
 
+# Delta India ke perpetuals — wahi jo desk ke chart aur screener par chalte hain.
+DELTA_BASE_URL = "https://api.india.delta.exchange"
+_DELTA_SYMBOLS: dict[str, str] = {
+    "bitcoin": "BTCUSD",
+    "ethereum": "ETHUSD",
+    "solana": "SOLUSD",
+    "ripple": "XRPUSD",
+    "cardano": "ADAUSD",
+    "dogecoin": "DOGEUSD",
+    "binancecoin": "BNBUSD",
+    "matic-network": "POLUSD",
+}
+
+# Ticker ke `symbol` se AI ke liye padhne layak naam.
+_DELTA_NAMES: dict[str, tuple[str, str]] = {
+    "bitcoin": ("Bitcoin", "BTC"),
+    "ethereum": ("Ethereum", "ETH"),
+    "solana": ("Solana", "SOL"),
+    "ripple": ("XRP", "XRP"),
+    "cardano": ("Cardano", "ADA"),
+    "dogecoin": ("Dogecoin", "DOGE"),
+    "binancecoin": ("BNB", "BNB"),
+    "matic-network": ("Polygon", "POL"),
+}
+
+
+def _fetch_delta_quote(coin_id: str) -> Optional[dict]:
+    """
+    Ek coin ka live quote Delta se.
+
+    AI pehle CoinGecko par tha — global spot average — jabki desk ka chart,
+    screener aur Risk Desk Delta India ke perpetuals dikhate hain. Do alag
+    markets, do alag prices: AI wo number bolta tha jo user ke saamne chart par
+    tha hi nahi. CoinGecko ke 24h high/low apne hi price se mel nahi khate the
+    (high current price se neeche aa jaata tha).
+    """
+    sym = _DELTA_SYMBOLS.get(coin_id)
+    if not sym:
+        return None
+    try:
+        res = requests.get(f"{DELTA_BASE_URL}/v2/tickers/{sym}", timeout=8)
+        res.raise_for_status()
+        t = (res.json() or {}).get("result") or {}
+    except Exception:
+        return None
+
+    def num(key):
+        try:
+            v = t.get(key)
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    price = num("close") or num("mark_price") or num("spot_price")
+    if price is None:
+        return None
+
+    name, ticker = _DELTA_NAMES.get(coin_id, (coin_id.title(), coin_id.upper()))
+    return {
+        "name": name,
+        "symbol": ticker,
+        "price_usd": price,
+        "change_24h_pct": num("ltp_change_24h") or num("mark_change_24h") or 0.0,
+        "market_cap_usd": None,
+        "high_24h": num("high") or num("mark_high_24h"),
+        "low_24h": num("low") or num("mark_low_24h"),
+        "turnover_24h_usd": num("turnover_usd"),
+        "source": "Delta",
+    }
+
+
 def fetch_crypto_quotes(coin_ids: list[str]) -> dict[str, dict]:
+    """
+    Delta pehle (desk isi par chalta hai), jo coin Delta par nahi hai uske liye
+    CoinGecko. Isse AI wahi number bolta hai jo chart par dikh raha hota hai.
+    """
+    if not coin_ids:
+        return {}
+
+    result: dict[str, dict] = {}
+    remaining: list[str] = []
+    for cid in coin_ids:
+        quote = _fetch_delta_quote(cid)
+        if quote:
+            result[cid] = quote
+        else:
+            remaining.append(cid)
+
+    if not remaining:
+        return result
+    result.update(_fetch_coingecko_quotes(remaining))
+    return result
+
+
+def _fetch_coingecko_quotes(coin_ids: list[str]) -> dict[str, dict]:
+    """Fallback — un coins ke liye jo Delta India par list nahi hain."""
     if not coin_ids:
         return {}
 
@@ -308,6 +403,7 @@ def fetch_crypto_quotes(coin_ids: list[str]) -> dict[str, dict]:
             "market_cap_usd": coin.get("market_cap"),
             "high_24h": coin.get("high_24h"),
             "low_24h": coin.get("low_24h"),
+            "source": "CoinGecko",
         }
     return result
 
@@ -460,16 +556,22 @@ def build_market_context(question: str) -> str:
         for coin_id, q in quotes.items():
             if q.get("price_usd") is None:
                 continue
+            turnover = q.get("turnover_24h_usd")
             lines.append(
                 f"• **{q['name']}** ({q['symbol']}): {_fmt_usd(q['price_usd'])} | "
-                f"24h: {q.get('change_24h_pct', 0):+.2f}% | "
+                f"24h: {(q.get('change_24h_pct') or 0):+.2f}% | "
                 f"24h H/L: {_fmt_usd(q.get('high_24h'))} / {_fmt_usd(q.get('low_24h'))}"
+                + (f" | 24h turnover: {_fmt_usd(turnover)}" if turnover else "")
+                + f" [{q.get('source', 'CoinGecko')}]"
             )
 
     if not lines:
         return ""
 
     return (
-        "LIVE MARKET DATA (Yahoo Finance / CoinGecko — use these numbers in your analysis):\n"
+        "LIVE MARKET DATA — use these exact numbers, do not recall prices from memory.\n"
+        "Crypto quotes are Delta Exchange India perpetuals, the same market this "
+        "desk's charts and screener show, so they may differ slightly from global "
+        "spot averages. Stocks are Yahoo Finance.\n"
         + "\n".join(lines)
     )
