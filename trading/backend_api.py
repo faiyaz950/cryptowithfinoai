@@ -1457,48 +1457,97 @@ def funding_rates():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _market_info_from_candles(symbol):
+    """
+    Ticker na mile to fallback — poore 24 ghante ki candles se stats banao.
+
+    Ye 24 x 1h candles maangta hai, ek 1m candle nahi. Purana code ek hi 1m
+    candle par "24h high/low/volume" bana raha tha, isliye range ek minute ki
+    hoti thi aur change hamesha 0.
+    """
+    data = client.get_historical_data(symbol=symbol, interval='1h', limit=24)
+    if not data or data.get('dataframe') is None or len(data['dataframe']) == 0:
+        return None
+
+    df = data['dataframe']
+    latest = df.iloc[-1]
+    first_open = float(df.iloc[0]['Open'])
+    close = float(latest['Close'])
+
+    return {
+        'success': True,
+        'symbol': symbol,
+        'source': 'candles',
+        'current_price': close,
+        'high_24h': float(df['High'].max()),
+        'low_24h': float(df['Low'].min()),
+        'volume_24h': float(df['Volume'].sum()),
+        'turnover_24h': None,
+        'mark_price': None,
+        'change_24h': ((close - first_open) / first_open * 100) if first_open else 0.0,
+    }
+
+
 @app.route('/api/market-info', methods=['GET'])
 def get_market_info():
-    """Market information fetch karta hai"""
+    """
+    24 ghante ke market stats — Delta ke ticker se.
+
+    Pehle ye ek hi 1-minute candle fetch karta tha aur usi se `high_24h`,
+    `low_24h` aur `volume_24h` bana deta tha, to "24h range" asal mein pichhle
+    ek minute ki range hoti thi (BTC par ~$30, jabki asli range ~$2,900 hai).
+    Aur `change_24h` `len(df) > 1` ke peeche tha jo limit=1 par kabhi sach nahi
+    hota — isliye wo hamesha theek 0.00% dikhta tha.
+
+    Exchange khud rolling-24h stats maintain karta hai, isliye ab wahi use hote
+    hain; candles sirf fallback hain.
+    """
+    symbol = request.args.get('symbol', 'BTCUSDT')
+
     try:
-        symbol = request.args.get('symbol', 'BTCUSDT')
-        exchange = request.args.get('exchange', 'delta')
-        
-        historical_data = client.get_historical_data(
-            symbol=symbol,
-            interval='1m',
-            limit=1,
-            exchange_name=exchange
+        res = requests.get(
+            f"{BASE_URL}/v2/tickers/{to_delta_symbol(symbol)}",
+            timeout=20,
         )
-        
-        if not historical_data or 'dataframe' not in historical_data:
+        res.raise_for_status()
+        t = (res.json() or {}).get('result') or {}
+
+        # `close` = last traded price, wahi jo chart ki candles dikhati hain.
+        # mark/spot sirf tab jab LTP na mile (naya ya patla contract).
+        price = _fnum(t.get('close')) or _fnum(t.get('mark_price')) or _fnum(t.get('spot_price'))
+        high = _fnum(t.get('high'), _fnum(t.get('mark_high_24h')))
+        low = _fnum(t.get('low'), _fnum(t.get('mark_low_24h')))
+        # ltp_change_24h `close` ke saath match karta hai; mark_change_24h mark ke saath.
+        change = _fnum(t.get('ltp_change_24h'), _fnum(t.get('mark_change_24h'), 0.0))
+
+        if price and high and low:
             return jsonify({
-                'error': 'Data fetch nahi hua',
-                'success': False
-            }), 400
-        
-        df = historical_data['dataframe']
-        latest = df.iloc[-1]
-        
-        change_24h = 0.0
-        if len(df) > 1:
-            change_24h = float(((latest['Close'] - df.iloc[0]['Open']) / df.iloc[0]['Open']) * 100)
-        
-        return jsonify({
-            'success': True,
-            'symbol': symbol,
-            'current_price': float(latest['Close']),
-            'high_24h': float(df['High'].max()),
-            'low_24h': float(df['Low'].min()),
-            'volume_24h': float(df['Volume'].sum()),
-            'change_24h': change_24h
-        })
-        
+                'success': True,
+                'symbol': symbol,
+                'source': 'ticker',
+                'current_price': price,
+                'high_24h': high,
+                'low_24h': low,
+                # Base asset mein (BTC), wahi unit jo pehle thi — ab sach mein 24h ka.
+                'volume_24h': _fnum(t.get('volume'), 0.0),
+                # USD turnover coins ke beech compare karne ke liye.
+                'turnover_24h': _fnum(t.get('turnover_usd'), _fnum(t.get('turnover'))),
+                'mark_price': _fnum(t.get('mark_price')),
+                'change_24h': change,
+            })
+
+        print(f"⚠️ Market info: {symbol} ka ticker adhoora aaya, candles par ja rahe hain")
     except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+        print(f"⚠️ Market info ticker fail ({symbol}): {e} — candles par ja rahe hain")
+
+    try:
+        fallback = _market_info_from_candles(symbol)
+        if fallback:
+            return jsonify(fallback)
+        return jsonify({'error': 'Data fetch nahi hua', 'success': False}), 400
+    except Exception as e:
+        print(f"❌ Market info error ({symbol}): {e}")
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 # Default credentials (demo mode)
