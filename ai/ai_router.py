@@ -11,7 +11,7 @@ import anthropic
 from dotenv import load_dotenv
 from .system_prompt import get_arjunai_prompt
 from .market_data import build_market_context, is_market_news_question
-from .grounding import needs_google_search, extract_grounding_sources, extract_search_queries
+from .grounding import extract_grounding_sources, extract_search_queries
 
 load_dotenv()
 
@@ -122,24 +122,72 @@ def _normalize_model(preferred_model: Optional[str]) -> str:
 VISION_MODEL_IDS = {"auto", "gemini", "openai"}
 
 
+# Greetings, shukriya, aur "tum kaun ho" type sawaal — inpar search bekaar hai.
+_CHITCHAT = re.compile(
+    r"^\s*(hi|hey|hello|hii+|namaste|salaam|yo|sup|thanks|thank you|shukriya|"
+    r"dhanyawad|ok|okay|thik|theek|acha|achha|bye|good morning|good evening|"
+    r"kaise ho|how are you|kaun ho|who are you|what can you do|kya kar sakte ho|"
+    r"help|madad)\b[\s!?.]*$",
+    re.I,
+)
+
+
+# "tum kaun ho", "aap kya kar sakte ho" — kahin bhi aaye to chit-chat hai.
+_IDENTITY = re.compile(
+    r"\b(tum|aap|you)\s+(kaun|kya\s+kar|who|what can)\b|\bwho are you\b|\bkaun ho\b",
+    re.I,
+)
+
+
+def _is_chitchat(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return True
+    if _CHITCHAT.match(q) or _IDENTITY.search(q):
+        return True
+    # Bina kisi sawaal ke ek-do shabd — search bhejne layak kuch hai hi nahi.
+    return len(q.split()) <= 2 and "?" not in q
+
+
+# Price / quote poochne wale shabd. Inka jawab exchange ka ticker deta hai.
+_PRICE_INTENT = re.compile(
+    r"\b(price|rate|value|cmp|ltp|quote|level|bhav|kitna|kitne|kitni|"
+    r"chal raha|trading at|kya hai ab|abhi kya)\b",
+    re.I,
+)
+
+
+def _is_price_question(question: str) -> bool:
+    return bool(_PRICE_INTENT.search(question or ""))
+
+
 def _wants_search(question: str, market_context: Optional[str]) -> bool:
     """
     Google Search kab chalani hai.
 
-    Pehle shart sirf "market_context khaali ho" thi — par news wale sawaal par
-    context mein Nifty/Sensex ka overview aa jaata hai, jisse search block ho
-    jaati thi. Live price hona news ka jawab nahi hota.
+    Pehle ye ek keyword list par chalti thi (`news|ipo|rbi|budget…`), jise
+    hamesha maintain karte rehna padta. Ab faisla behaviour se hota hai:
 
-    Isliye: news / khabar / headline wale sawaal par search hamesha, aur baaki
-    par tabhi jab live data maujood na ho — kyunki exchange ka apna ticker hote
-    hue web se price dhoondhna kharaab sauda hai (har site alag price dikhati
-    hai, aur koi bhi wo exchange nahi jahan user trade karta hai).
+      1. News / khabar / headline  -> hamesha search. Live price hona "kya
+         hua aur kyun" ka jawab nahi hota.
+      2. Price poocha gaya aur live data maujood -> search nahi. Exchange ka
+         apna ticker haath mein hote hue web se price dhoondhna downgrade hai —
+         har site alag number deti hai aur koi bhi wo venue nahi jahan user
+         trade karta hai. Sirf `market_context` hona kaafi nahi: "bitcoin
+         halving kab hai?" par bhi BTC ka price context mein aa jaata hai,
+         par jawab price se nahi milta.
+      3. Baaki sab kuch           -> search, kyunki AI ki training purani hai
+         aur live web usse behtar jawab dega.
+
+    Sirf greetings/chit-chat chhod diye jaate hain.
     """
-    if not needs_google_search(question):
+    if _is_chitchat(question):
         return False
     if is_market_news_question(question):
         return True
-    return not market_context
+    if market_context and _is_price_question(question):
+        return False
+    return True
 
 
 def _pretty_gemini_name(model_id: str, grounded: bool = False) -> str:
