@@ -10,7 +10,7 @@ from openai import OpenAI
 import anthropic
 from dotenv import load_dotenv
 from .system_prompt import get_arjunai_prompt
-from .market_data import build_market_context
+from .market_data import build_market_context, is_market_news_question
 from .grounding import needs_google_search, extract_grounding_sources, extract_search_queries
 
 load_dotenv()
@@ -120,6 +120,26 @@ def _normalize_model(preferred_model: Optional[str]) -> str:
     model = _normalize_model(preferred_model)
     return model if model in VALID_MODEL_IDS else "auto"
 VISION_MODEL_IDS = {"auto", "gemini", "openai"}
+
+
+def _wants_search(question: str, market_context: Optional[str]) -> bool:
+    """
+    Google Search kab chalani hai.
+
+    Pehle shart sirf "market_context khaali ho" thi — par news wale sawaal par
+    context mein Nifty/Sensex ka overview aa jaata hai, jisse search block ho
+    jaati thi. Live price hona news ka jawab nahi hota.
+
+    Isliye: news / khabar / headline wale sawaal par search hamesha, aur baaki
+    par tabhi jab live data maujood na ho — kyunki exchange ka apna ticker hote
+    hue web se price dhoondhna kharaab sauda hai (har site alag price dikhati
+    hai, aur koi bhi wo exchange nahi jahan user trade karta hai).
+    """
+    if not needs_google_search(question):
+        return False
+    if is_market_news_question(question):
+        return True
+    return not market_context
 
 
 def _pretty_gemini_name(model_id: str, grounded: bool = False) -> str:
@@ -508,14 +528,20 @@ class ArjunAI:
         if not self.gemini_clients:
             raise Exception("Gemini not configured")
 
-        want_search = needs_google_search(question) and not market_context
+        want_search = _wants_search(question, market_context)
         last_err: Optional[Exception] = None
         contents = self._build_gemini_contents(question, history, file_data)
         for key_i, client in self._iter_gemini_clients():
             for model_id in self.gemini_model_ids:
                 quota_hit = False
                 skip_model = False
-                for enable_search in ([False, True] if want_search else [False]):
+                # Search WITH pehle, bina-search baad mein. Pehle ulta tha —
+                # non-search call pehle chalti thi, succeed hoti thi aur seedha
+                # return kar jaati thi, to `True` tak control kabhi pahunchta hi
+                # nahi tha aur Google Search grounding kabhi chalti hi nahi thi.
+                # `_gemini_retry_action` ka "retry_no_search" isi fallback ke
+                # liye likha tha — ab wo asli mein kaam karta hai.
+                for enable_search in ([True, False] if want_search else [False]):
                     if skip_model:
                         break
                     for attempt in range(GEMINI_UNAVAILABLE_ATTEMPTS):
@@ -632,12 +658,22 @@ class ArjunAI:
         contents = self._build_gemini_contents(question, history, file_data)
         has_images = file_data and any(fd.get("is_image") for fd in file_data)
 
+        # UI yahi streaming path use karta hai, aur yahan search hardcoded False
+        # thi — isliye app mein Google Search grounding kabhi chalti hi nahi
+        # thi, chahe sawaal news/IPO/macro ka ho. Live market context hone par
+        # ab bhi band rehti hai: exchange ka apna ticker maujood ho to web se
+        # price dhoondhna ulta kharaab hai.
+        want_search = _wants_search(question, market_context) and not has_images
+
         last_err: Optional[Exception] = None
         for key_i, client in self._iter_gemini_clients():
             for model_id in self.gemini_model_ids:
                 quota_hit = False
                 for attempt in range(GEMINI_UNAVAILABLE_ATTEMPTS):
-                    config = self._gemini_config(portfolio_context, market_context, question, False, model_id)
+                    # Search sirf pehle attempt par; wo fail ho to baaki
+                    # attempts bina search, taaki jawab phir bhi mile.
+                    enable_search = want_search and attempt == 0
+                    config = self._gemini_config(portfolio_context, market_context, question, enable_search, model_id)
                     try:
                         if has_images:
                             response = client.models.generate_content(
