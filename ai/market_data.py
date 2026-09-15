@@ -200,10 +200,26 @@ def _detect_crypto_ids(question: str) -> list[str]:
     return found[:3]
 
 
-def _yahoo_symbol(sym: str) -> str:
-    if sym.startswith("^"):
+# Yahoo par NSE = .NS, BSE = .BO. Dono se live quote milta hai aur `exchangeName`
+# batata hai ki price kis exchange ka hai.
+NSE_SUFFIX = ".NS"
+BSE_SUFFIX = ".BO"
+
+
+def _yahoo_symbol(sym: str, suffix: str = NSE_SUFFIX) -> str:
+    if sym.startswith("^") or sym.endswith((NSE_SUFFIX, BSE_SUFFIX)):
         return sym
-    return f"{sym}.NS"
+    return f"{sym}{suffix}"
+
+
+def _exchange_label(meta: dict) -> str:
+    """Yahoo ka exchange code -> padhne layak naam."""
+    code = (meta.get("exchangeName") or "").upper()
+    if code in ("NSI", "NSE"):
+        return "NSE"
+    if code == "BSE":
+        return "BSE"
+    return code or "NSE"
 
 
 _QUOTE_CACHE: dict[str, tuple[float, Optional[dict]]] = {}
@@ -213,10 +229,22 @@ _QUOTE_CACHE_TTL = 20  # seconds — short-lived so quotes stay fresh, but avoid
 
 
 def _fetch_yahoo_chart(yahoo_sym: str) -> Optional[dict]:
+    """
+    NSE pehle, phir BSE.
+
+    Har Indian scrip dono exchanges par listed nahi hai — kuch sirf BSE par
+    hain, aur NSE ka quote kabhi-kabhi khaali aa jaata hai. Pehle sirf `.NS`
+    try hota tha, to aise stocks par "data nahi mila" aata tha jabki BSE par
+    price maujood thi. Result mein `exchange` batata hai ki number kahan se aaya.
+    """
     cached = _QUOTE_CACHE.get(yahoo_sym)
     if cached and (time.monotonic() - cached[0]) < _QUOTE_CACHE_TTL:
         return cached[1]
+
     data = _fetch_yahoo_chart_uncached(yahoo_sym)
+    if data is None and yahoo_sym.endswith(NSE_SUFFIX):
+        data = _fetch_yahoo_chart_uncached(yahoo_sym[: -len(NSE_SUFFIX)] + BSE_SUFFIX)
+
     _QUOTE_CACHE[yahoo_sym] = (time.monotonic(), data)
     return data
 
@@ -239,9 +267,10 @@ def _fetch_yahoo_chart_uncached(yahoo_sym: str) -> Optional[dict]:
             return None
         prev = meta.get("chartPreviousClose") or meta.get("previousClose") or price
         change_pct = ((price - prev) / prev * 100) if prev else 0
-        raw_sym = meta.get("symbol", yahoo_sym).replace(".NS", "")
+        raw_sym = meta.get("symbol", yahoo_sym).replace(NSE_SUFFIX, "").replace(BSE_SUFFIX, "")
         return {
             "key": raw_sym,
+            "exchange": _exchange_label(meta),
             "name": meta.get("longName") or meta.get("shortName", raw_sym),
             "price": price,
             "change": price - prev if prev else 0,
@@ -277,8 +306,11 @@ def fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
 
 
 def _format_stock_line(sym: str, q: dict) -> str:
+    # Exchange saath mein — NSE aur BSE ke price thode alag hote hain, to AI ko
+    # pata hona chahiye ki wo kis exchange ka number bol raha hai.
+    venue = q.get("exchange") or "NSE"
     return (
-        f"• **{q['name']}** ({sym}): {_fmt_inr(q['price'])} | "
+        f"• **{q['name']}** ({sym} · {venue}): {_fmt_inr(q['price'])} | "
         f"Change: {q.get('change_pct', 0):+.2f}% | "
         f"Day H/L: {_fmt_inr(q.get('day_high'))} / {_fmt_inr(q.get('day_low'))} | "
         f"52W H/L: {_fmt_inr(q.get('fifty_two_week_high'))} / {_fmt_inr(q.get('fifty_two_week_low'))}"
@@ -644,6 +676,7 @@ def build_market_context(question: str) -> str:
         "LIVE MARKET DATA — use these exact numbers, do not recall prices from memory.\n"
         "Crypto quotes are Delta Exchange India perpetuals, the same market this "
         "desk's charts and screener show, so they may differ slightly from global "
-        "spot averages. Stocks are Yahoo Finance.\n"
+        "spot averages. Indian stocks carry their exchange (NSE or BSE) on each "
+        "line — quote the exchange when you quote the price.\n"
         + "\n".join(lines)
     )
