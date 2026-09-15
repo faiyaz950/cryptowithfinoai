@@ -1,10 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
 def get_arjunai_prompt(portfolio_context: Optional[str] = None, market_context: Optional[str] = None) -> str:
-    today = datetime.now().strftime("%B %d, %Y")  # e.g. "June 16, 2026"
-    day_name = datetime.now().strftime("%A")       # e.g. "Monday"
+    # IST (UTC+5:30, koi DST nahi). Server UTC par chalta hai, to `datetime.now()`
+    # IST ki aadhi raat se 5:30 subah ke beech kal ki date deta tha — aur AI
+    # "Aaj (September 14)" likh deta tha jab India mein 15 tareekh thi.
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    today = now_ist.strftime("%B %d, %Y")  # e.g. "June 16, 2026"
+    day_name = now_ist.strftime("%A")      # e.g. "Monday"
 
     base = f"""Tu Finowings AI hai — India ka expert financial chatbot jo Indian Stock Market, Cryptocurrency, aur Mutual Funds mein deep expertise rakhta hai.
 

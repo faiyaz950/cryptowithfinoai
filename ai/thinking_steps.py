@@ -72,7 +72,7 @@ def generate_thinking_steps(question: str, market_context: Optional[str] = None)
             else:
                 steps.append("Checking corporate actions — dividends, earnings, and recent news sentiment.")
         elif topic == "crypto":
-            steps.append("Fetching live crypto prices, 24h change, and market cap from CoinGecko.")
+            steps.append("Fetching live crypto prices, 24h change, and turnover from Delta Exchange India.")
             steps.append("Analyzing dominance, volatility, and cycle context for the asset.")
         else:
             steps.append("Fetching latest market data and cross-referencing with live sources.")

@@ -128,19 +128,59 @@ _NON_TICKER_ACRONYMS = {
 }
 
 
+# Hinglish/English ke aam shabd jo ALL CAPS mein ticker jaise lagte hain.
+_STOPWORD_TOKENS = {
+    "AAJ", "KA", "KE", "KI", "KO", "KYA", "KYU", "KYUN", "HAI", "HAIN", "THA",
+    "THE", "THI", "ABHI", "ACHHA", "ACCHA", "BATAO", "BATA", "KITNA", "KITNE",
+    "MERA", "MERE", "MUJHE", "YE", "WO", "VO", "AUR", "YA", "SE", "PAR", "MEIN",
+    "NAHI", "HO", "HOGA", "KAR", "KARO", "DO", "DENA", "CHAHIYE", "SAHI",
+    "VALUE", "PRICE", "RATE", "LIVE", "NOW", "TODAY", "WHAT", "WHEN", "WHY",
+    "HOW", "THE", "AND", "FOR", "WITH", "FROM", "THIS", "THAT", "IS", "ARE",
+    "WAS", "WERE", "CAN", "WILL", "SHOULD", "GOOD", "BEST", "HIGH", "LOW",
+    "BUY", "SELL", "HOLD", "LONG", "SHORT", "CHART", "MARKET", "DATA", "INFO",
+    "NEWS", "TIME", "DAY", "WEEK", "MONTH", "YEAR", "LEVEL", "TREND", "UPDATE",
+}
+
+# Crypto ke naam stock ticker nahi hain — "BITCOIN" ko NSE symbol maanna galat hai.
+_CRYPTO_TOKENS = {a.upper() for a in CRYPTO_ALIASES} | {
+    c.upper() for c in CRYPTO_ALIASES.values()
+} | {"CRYPTO", "COIN", "USDT", "USD", "PERP", "PERPETUAL"}
+
+
+def _is_shouty(text: str) -> bool:
+    """
+    Poora sawaal CAPS mein likha hai?
+
+    Aise sawaal mein capital letters ka koi matlab nahi rehta, isliye
+    "AAJ BITCOIN KA KYA VALUE HAI?" ke har shabd ko NSE ticker samajh lena
+    galat hai — yahi "ITC Limited" ka chart Bitcoin ke sawaal par laga raha tha.
+    """
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 8:
+        return False
+    return sum(1 for c in letters if c.isupper()) / len(letters) > 0.8
+
+
 def _detect_stock_symbols(question: str) -> list[str]:
     q = question.lower()
     found: list[str] = []
     seen: set[str] = set()
 
     for alias, symbol in _SORTED_STOCK_ALIASES:
-        if alias in q and symbol not in seen:
+        # Word boundary ke bina "itc" b-ITC-oin ke andar match ho jaata tha, aur
+        # Bitcoin ke sawaal par ITC Limited ka chart aa jaata tha.
+        if re.search(r"\b" + re.escape(alias) + r"\b", q) and symbol not in seen:
             found.append(symbol)
             seen.add(symbol)
 
-    # Explicit NSE tickers (2–15 uppercase letters)
-    for match in re.findall(r"\b([A-Z]{2,15})\b", question):
-        if match not in seen and match not in _NON_TICKER_ACRONYMS:
+    # Explicit NSE tickers (2–15 uppercase letters) — sirf tab jab caps ka
+    # matlab ho, yaani user ne poora sawaal CAPS mein na likha ho.
+    if not _is_shouty(question):
+        for match in re.findall(r"\b([A-Z]{2,15})\b", question):
+            if match in seen or match in _NON_TICKER_ACRONYMS:
+                continue
+            if match in _STOPWORD_TOKENS or match in _CRYPTO_TOKENS:
+                continue
             found.append(match)
             seen.add(match)
 
@@ -336,14 +376,25 @@ def _fetch_delta_quote(coin_id: str) -> Optional[dict]:
         return None
 
     name, ticker = _DELTA_NAMES.get(coin_id, (coin_id.title(), coin_id.upper()))
+    high = num("high") or num("mark_high_24h")
+    low = num("low") or num("mark_low_24h")
+
+    # Exchange ka LTP high/low kabhi-kabhi close se ek tick peeche hota hai, to
+    # "24h high" current price se neeche aa jaati thi — jo namumkin hai aur AI
+    # use hu-ba-hu bol deta tha. Price ko hi limit maan lo.
+    if high is not None:
+        high = max(high, price)
+    if low is not None:
+        low = min(low, price)
+
     return {
         "name": name,
         "symbol": ticker,
         "price_usd": price,
         "change_24h_pct": num("ltp_change_24h") or num("mark_change_24h") or 0.0,
         "market_cap_usd": None,
-        "high_24h": num("high") or num("mark_high_24h"),
-        "low_24h": num("low") or num("mark_low_24h"),
+        "high_24h": high,
+        "low_24h": low,
         "turnover_24h_usd": num("turnover_usd"),
         "source": "Delta",
     }
@@ -487,6 +538,27 @@ def fetch_yahoo_history(symbol: str, range_: str = "1mo") -> Optional[dict]:
 
 def build_chart_payload(question: str) -> Optional[dict]:
     """Build chart metadata for the primary stock/crypto in the question."""
+    # Crypto pehle: ye crypto desk hai, aur crypto detection word-boundary par
+    # hoti hai to wo stock detection se zyada bharosemand hai.
+    crypto_first = _detect_crypto_ids(question)
+    if crypto_first:
+        quotes = fetch_crypto_quotes(crypto_first[:1])
+        if quotes:
+            coin_id = crypto_first[0]
+            q = quotes[coin_id]
+            return {
+                "type": "crypto",
+                "symbol": q.get("symbol", coin_id.upper()),
+                "name": q.get("name", coin_id),
+                "currency": "USD",
+                "price": q.get("price_usd"),
+                "change_pct": q.get("change_24h_pct", 0),
+                "day_high": q.get("high_24h"),
+                "day_low": q.get("low_24h"),
+                "market_cap": q.get("market_cap_usd"),
+            }
+        return None
+
     stock_syms = _detect_stock_symbols(question)
     if stock_syms:
         sym = stock_syms[0]
