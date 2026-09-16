@@ -1,4 +1,5 @@
 import json
+import logging
 import base64
 import asyncio
 import threading
@@ -251,6 +252,36 @@ async def process_uploaded_files(files: List[UploadFile]) -> List[dict]:
     return processed
 
 
+def _failure_message(exc: Exception) -> tuple[str, str]:
+    """
+    Stream toot jaye to user ko kya dikhana hai — (text, model label).
+
+    Chup rehna sabse bura option hai: UI "Thinking" par atka reh jaata hai aur
+    user ko lagta hai app hang ho gaya, jabki asal mein quota khatam hai.
+    """
+    err = str(exc)
+    low = err.lower()
+    if "429" in err or "resource_exhausted" in low or "quota" in low:
+        return (
+            "⚠️ **Gemini ka free quota khatam ho gaya hai.**\n\n"
+            "Free tier ki limit lag chuki hai — ye kuch der/agle din reset hoti hai.\n\n"
+            "Turant chalana ho to backend ke `.env` mein ek aur key daal dein "
+            "(`GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`), ya "
+            "[Google AI Studio](https://aistudio.google.com/app/apikey) se paid plan le lein.",
+            "Quota Limit",
+        )
+    if "api key" in low or "permission" in low or "unauthenticated" in low:
+        return (
+            "⚠️ **Gemini API key kaam nahi kar rahi.** Backend ke `.env` mein "
+            "`GEMINI_API_KEY` check karein.",
+            "Key Error",
+        )
+    return (
+        "⚠️ **Abhi jawab nahi aa paaya.** Thodi der baad dobara koshish karein.",
+        "Error",
+    )
+
+
 @app.post("/api/chat/stream")
 async def chat_stream(
     request: Request,
@@ -332,6 +363,7 @@ async def chat_stream(
         full_text = ""
         completed_model = None
         completion_meta: dict = {}
+        failure: Optional[Exception] = None
 
         def produce():
             try:
@@ -353,12 +385,18 @@ async def chat_stream(
                 events.put(("done", sentinel))
 
         def apply_event(kind, payload):
-            nonlocal chart_payload, full_text, completed_model, completion_meta
+            nonlocal chart_payload, full_text, completed_model, completion_meta, failure
             if kind == "chart":
                 chart_payload = payload
                 return None
             if kind == "error":
-                raise payload
+                # Pehle yahan `raise payload` tha. Async generator ke andar raise
+                # hone se generator wahin mar jaata tha, aakhir wala "done" event
+                # kabhi nahi jaata tha, aur client "Thinking" par hamesha ke liye
+                # atka reh jaata tha — quota khatam hone par yahi hota tha.
+                failure = payload
+                logging.warning("Chat stream failed: %s", payload)
+                return "stop"
             if kind == "done":
                 return "stop"
             token, model_done, meta = payload
@@ -403,7 +441,13 @@ async def chat_stream(
             if result:
                 yield result
 
-        if completed_model and completed_model != "error" and full_text and not has_files and model_pref == "auto":
+        if failure is not None and not full_text:
+            text, label = _failure_message(failure)
+            completed_model = label
+            yield _sse({"type": "token", "content": text})
+
+        if completed_model and completed_model not in ("error", "Error", "Quota Limit", "Key Error") \
+                and full_text and not has_files and model_pref == "auto":
             set_cached_response(question, full_text)
 
         yield _sse({
