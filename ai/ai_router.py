@@ -306,17 +306,13 @@ class ArjunAI:
         if agent_name == "openai" and ("invalid_api_key" in err_lower or "incorrect api key" in err_lower):
             return "⚠️ **OpenAI API key galat hai.** `.env` file mein `OPENAI_API_KEY` check karein."
         if agent_name == "gemini" and ("429" in err or "resource_exhausted" in err_lower):
-            # Saaf-saaf batao ki free quota khatam hai aur aage kya karna hai —
-            # warna user ko lagta hai app toot gaya.
+            # Saaf batao ki quota khatam hai — warna user ko lagta hai app toot
+            # gaya. Setup ki baatein (.env keys, billing) yahan nahi: ye product
+            # ka user hai, deploy karne wala nahi.
             return (
                 "⚠️ **Gemini ka free quota khatam ho gaya hai.**\n\n"
-                "Free tier ki daily limit lag chuki hai. Ye apne aap reset hoti hai "
-                "(aam taur par agle din), uske baad sab normal chalega.\n\n"
-                "**Abhi chalana ho to:**\n"
-                "- Backend ke `.env` mein ek aur key daalein — `GEMINI_API_KEY_2` "
-                "(teen keys tak rotate ho jaati hain)\n"
-                "- Ya [Google AI Studio](https://aistudio.google.com/app/apikey) se "
-                "paid plan le lein"
+                "Daily limit lag chuki hai. Ye apne aap reset ho jaati hai — "
+                "thodi der baad dobara koshish karein."
             )
         if agent_name == "gemini" and ("503" in err or "unavailable" in err_lower):
             return (

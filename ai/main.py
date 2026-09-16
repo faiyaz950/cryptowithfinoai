@@ -264,16 +264,14 @@ def _failure_message(exc: Exception) -> tuple[str, str]:
     if "429" in err or "resource_exhausted" in low or "quota" in low:
         return (
             "⚠️ **Gemini ka free quota khatam ho gaya hai.**\n\n"
-            "Free tier ki limit lag chuki hai — ye kuch der/agle din reset hoti hai.\n\n"
-            "Turant chalana ho to backend ke `.env` mein ek aur key daal dein "
-            "(`GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`), ya "
-            "[Google AI Studio](https://aistudio.google.com/app/apikey) se paid plan le lein.",
+            "Daily limit lag chuki hai. Ye apne aap reset ho jaati hai — "
+            "thodi der baad dobara koshish karein.",
             "Quota Limit",
         )
     if "api key" in low or "permission" in low or "unauthenticated" in low:
         return (
-            "⚠️ **Gemini API key kaam nahi kar rahi.** Backend ke `.env` mein "
-            "`GEMINI_API_KEY` check karein.",
+            "⚠️ **AI service abhi available nahi hai.** Thodi der baad dobara "
+            "koshish karein.",
             "Key Error",
         )
     return (
