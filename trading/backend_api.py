@@ -29,10 +29,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from django_orm import (
     init_database,
     database_backend,
-    save_login_entry,
-    fetch_login_history,
-    save_broker_login_entry,
-    get_latest_broker_login,
     save_demo_order_entry,
     fetch_recent_orders,
     create_user_account,
@@ -280,16 +276,16 @@ def validate_exchange_credentials(exchange, api_key, secret_key):
 # Yahan key user ki apni hai, to wahi baat user ki zubaan mein.
 BYOK_ERROR_MESSAGES = {
     "ip_not_whitelisted": (
-        "Aapki API key par IP whitelist laga hai. Delta Exchange → API Keys mein key edit karke "
-        "ye IP add karein: {client_ip}"
+        "Aapki API key par IP whitelist laga hai. Delta Exchange → API Management mein key edit "
+        "karke ye IP add karein: {client_ip} (ek se zyada IP comma se daal sakte hain)."
     ),
     "invalid_api_key": (
         "API key sahi nahi hai. Dhyan dein ki key india.delta.exchange ke account se bani ho, "
         "aur poori copy hui ho."
     ),
     "unauthorized": (
-        "Is key ko zaroori permission nahi hai. Delta par key edit karke Read Data aur Trading "
-        "permission on karein."
+        "Is key ko zaroori permission nahi hai. Delta → API Management mein key par Read Data aur "
+        "Trading dono on karein — balance aur positions ke liye Trading permission zaroori hai."
     ),
     "expired_signature": "Delta se time match nahi hua. Kuch second baad dobara try karein.",
     "signature_mismatch": "API secret galat hai. Secret dobara copy karein — aage-peeche koi space na ho.",
@@ -1624,177 +1620,6 @@ def get_market_info():
 
 
 # Default credentials (demo mode)
-DEFAULT_CREDENTIALS = {
-    'admin': 'admin123',
-    'user': 'user123',
-    'demo': 'demo123'
-}
-
-@app.route('/api/login', methods=['POST', 'OPTIONS'])
-def login():
-    """Login endpoint - stores login data"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    try:
-        data = request.get_json(silent=True) or {}
-        username = (data.get('username') or '').strip()
-        password = data.get('password') or ''
-        
-        if not username or not password:
-            print(f"⚠️ Login rejected: username/password empty (username={repr(username)[:20]})")
-            return jsonify({
-                'success': False,
-                'error': 'Username aur password required hain'
-            }), 400
-        
-        # Demo mode: Accept any credentials OR default credentials
-        # In production, validate against database
-        is_valid = False
-        
-        # Check default credentials
-        if username in DEFAULT_CREDENTIALS and DEFAULT_CREDENTIALS[username] == password:
-            is_valid = True
-        else:
-            # Demo mode: accept any credentials
-            is_valid = True
-        
-        if not is_valid:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid username or password'
-            }), 401
-        
-        # Save to DB
-        try:
-            login_time = save_login_entry(
-                username=username,
-                password=password,  # In production, hash this!
-                login_type='app',
-                ip_address=request.remote_addr
-            )
-            print(f"✅ Login recorded in DB: {username} at {login_time.isoformat()}")
-        except Exception as db_err:
-            print(f"❌ Login DB save failed: {db_err}")
-            return jsonify({
-                'success': False,
-                'error': f'Login save failed: {db_err}'
-            }), 500
-        
-        return jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'username': username
-        })
-        
-    except Exception as e:
-        print(f"❌ Login error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/delta-demo-login', methods=['POST', 'GET', 'OPTIONS'])
-def delta_demo_login():
-    """Delta Exchange Demo account login endpoint"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    # Handle GET request for testing
-    if request.method == 'GET':
-        return jsonify({
-            'success': True,
-            'message': 'Delta Demo Login endpoint is working!',
-            'endpoint': '/api/delta-demo-login'
-        })
-    
-    try:
-        data = request.get_json(silent=True) or {}
-        username = (data.get('username') or '').strip()
-        password = data.get('password') or ''
-        
-        if not username or not password:
-            return jsonify({
-                'success': False,
-                'error': 'Username aur password required hain'
-            }), 400
-        
-        # Delta Exchange Demo login - authenticate with Delta Exchange demo API
-        # Note: Delta Exchange demo typically requires API keys, but we'll accept username/password
-        # In production, this would authenticate with Delta Exchange demo API
-        
-        # For demo purposes, accept any credentials
-        # In production, validate against Delta Exchange demo API
-        is_valid = True
-        
-        try:
-            login_time = save_login_entry(
-                username=username,
-                password=password,  # In production, hash this!
-                login_type='delta_demo',
-                ip_address=request.remote_addr
-            )
-            print(f"✅ Delta Exchange Demo login recorded in DB: {username} at {login_time.isoformat()}")
-        except Exception as db_err:
-            print(f"❌ Delta demo login DB save failed: {db_err}")
-            return jsonify({
-                'success': False,
-                'error': f'Delta demo login save failed: {db_err}'
-            }), 500
-        
-        # Initialize Delta Exchange client with default credentials
-        # User can later update API keys if needed
-        delta_client = DeltaExchangeClient(
-            "2NifBsEb6rIH2xM7dapTZr1wBSv8Ua",
-            "vDJairU3fNWEyVJOqtmdKwK2iL8eH4M0ifH4ViK1rEPmvhGylvPg6RK6Ll8Z"
-        )
-        
-        # Test connection
-        delta_warning = None
-        try:
-            market_data = delta_client.get_market_data()
-            if market_data:
-                print(f"✅ Delta Exchange connection successful")
-            else:
-                print(f"⚠️ Delta Exchange connection test failed, but login accepted")
-                if getattr(delta_client, 'last_error', None) and 'expired_signature' in (delta_client.last_error or ''):
-                    delta_warning = 'Delta session expired. Positions/orders load nahi honge - valid API keys use karein ya baad mein dubara login karein.'
-        except Exception as e:
-            print(f"⚠️ Delta Exchange connection test error: {e}, but login accepted")
-            delta_warning = 'Delta connection check fail. Positions/orders load nahi ho sakte.'
-        
-        out = {
-            'success': True,
-            'message': 'Delta Exchange Demo login successful',
-            'username': username,
-            'login_type': 'delta_demo'
-        }
-        if delta_warning:
-            out['warning'] = delta_warning
-        return jsonify(out)
-        
-    except Exception as e:
-        print(f"❌ Delta Demo login error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/login-history', methods=['GET'])
-def get_login_history():
-    """Get login history (admin endpoint)"""
-    try:
-        total_logins, logins = fetch_login_history(limit=50)
-        return jsonify({
-            'success': True,
-            'total_logins': total_logins,
-            'logins': logins
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -1913,148 +1738,6 @@ def auth_login():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
-@app.route('/api/auth/key-login', methods=['POST'])
-def auth_key_login():
-    """
-    Login/signup using exchange API key + secret.
-    If key already linked, logs into existing user.
-    If new key, creates user and links account.
-    """
-    if not DB_READY:
-        return jsonify({'success': False, 'error': 'Database unavailable'}), 503
-    try:
-        payload = request.get_json(silent=True) or {}
-        exchange = (payload.get('exchange') or 'delta').strip().lower()
-        api_key = (payload.get('api_key') or '').strip()
-        secret_key = (payload.get('secret_key') or '').strip()
-        label = (payload.get('label') or 'Primary').strip()
-
-        if exchange not in SUPPORTED_EXCHANGES:
-            return jsonify({'success': False, 'error': f'Unsupported exchange: {exchange}'}), 400
-        if not api_key or not secret_key:
-            return jsonify({'success': False, 'error': 'api_key and secret_key are required'}), 400
-
-        verify = validate_exchange_credentials(exchange, api_key, secret_key)
-        if not verify.get('success'):
-            return jsonify({
-                'success': False,
-                'error': verify.get('error') or 'Credential verification failed'
-            }), 401
-        if verify.get('can_withdraw', False):
-            return jsonify({
-                'success': False,
-                'error': 'Withdrawal-enabled API keys are not allowed. Use Trade+Read only.'
-            }), 400
-
-        fingerprint = api_key_fingerprint(exchange, api_key)
-        existing_account = get_exchange_account_by_fingerprint(exchange, fingerprint)
-        user = None
-        account_id = None
-
-        profile_data = fetch_exchange_profile(exchange, api_key, secret_key)
-        profile_name, profile_email = extract_user_profile_from_exchange(profile_data)
-
-        if existing_account:
-            user = get_user_account_by_id(existing_account['user_id'])
-            if not user or not user.get('is_active', False):
-                return jsonify({'success': False, 'error': 'Linked user is not active'}), 401
-            account_id = existing_account['id']
-            update_exchange_account_credentials(
-                account_id,
-                user['id'],
-                api_key_encrypted=encrypt_secret(api_key),
-                secret_key_encrypted=encrypt_secret(secret_key),
-                api_key_fingerprint=fingerprint,
-                key_hint=key_hint(api_key),
-            )
-            update_exchange_account_status(
-                account_id,
-                user['id'],
-                is_active=True,
-                can_trade=verify.get('can_trade', False),
-                can_withdraw=verify.get('can_withdraw', False),
-                permissions_verified=verify.get('permissions_verified', False),
-                last_error='',
-            )
-            updates = {}
-            if profile_name and not (user.get('full_name') or '').strip():
-                updates['full_name'] = profile_name[:50]
-            if profile_email and validate_email(profile_email) and not (user.get('email') or '').strip():
-                updates['email'] = profile_email.strip().lower()
-                updates['email_verified'] = True
-            if updates:
-                update_user_account_fields(user['id'], **updates)
-                user = get_user_account_by_id(user['id']) or user
-        else:
-            username_base = (
-                _deep_find_first(profile_data, {"username", "user_name", "login_id"})
-                or f"{exchange}_key_{api_key[-6:]}"
-            )
-            username = make_unique_username(username_base)
-            random_password = secrets.token_urlsafe(18)
-            created_user = create_user_account(
-                username=username,
-                password_hash=hash_password(random_password),
-                email=profile_email if validate_email(profile_email) else "",
-            )
-            user = get_user_account_by_id(created_user['id']) or created_user
-            user_updates = {}
-            if profile_name:
-                user_updates['full_name'] = profile_name[:50]
-            if profile_email and validate_email(profile_email):
-                user_updates['email'] = profile_email.strip().lower()
-                user_updates['email_verified'] = True
-            if user_updates:
-                update_user_account_fields(user['id'], **user_updates)
-                user = get_user_account_by_id(user['id']) or user
-            account_id = create_exchange_account(
-                user_id=user['id'],
-                exchange=exchange,
-                api_key_encrypted=encrypt_secret(api_key),
-                secret_key_encrypted=encrypt_secret(secret_key),
-                api_key_fingerprint=fingerprint,
-                label=label or 'Primary',
-                key_hint=key_hint(api_key),
-                can_trade=verify.get('can_trade', False),
-                can_withdraw=verify.get('can_withdraw', False),
-                permissions_verified=verify.get('permissions_verified', False),
-                last_error='',
-            )
-
-        session_token = secrets.token_urlsafe(48)
-        expires_at = datetime.now() + timedelta(hours=SESSION_TTL_HOURS)
-        create_user_session(
-            user_id=user['id'],
-            token=session_token,
-            expires_at=expires_at,
-            ip_address=request.remote_addr,
-            user_agent=request.headers.get('User-Agent', ''),
-        )
-
-        return jsonify({
-            'success': True,
-            'message': 'Logged in with exchange key',
-            'token': session_token,
-            'expires_at': expires_at.isoformat(),
-            'user': {
-                'id': user['id'],
-                'username': user['username'],
-                'full_name': user.get('full_name', ''),
-                'email': user.get('email', ''),
-                'email_verified': user.get('email_verified', False),
-            },
-            'exchange_account': {
-                'id': account_id,
-                'exchange': exchange,
-                'key_hint': key_hint(api_key),
-                'permissions_verified': verify.get('permissions_verified', False),
-                'can_trade': verify.get('can_trade', False),
-                'can_withdraw': verify.get('can_withdraw', False),
-            }
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/auth/me', methods=['GET'])
@@ -2452,6 +2135,8 @@ def byok_connect_exchange():
                 key_hint=key_hint(api_key),
             )
         update_exchange_account_status(account_id, g.user['id'], **status)
+        # Nayi key par purana (kharab key wala) nateeja nahi dikhna chahiye.
+        _invalidate_private_cache(account_id)
 
         return jsonify({
             'success': True,
@@ -2511,6 +2196,7 @@ def byok_egress_ips():
 @require_auth
 def byok_verify_exchange(account_id):
     try:
+        _invalidate_private_cache(account_id)
         account = get_exchange_account_for_user(account_id, g.user['id'])
         if not account:
             return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
@@ -2575,6 +2261,7 @@ def byok_revoke_exchange(account_id):
 @app.route('/api/byok/exchange-accounts/<int:account_id>', methods=['DELETE'])
 @require_auth
 def byok_delete_exchange(account_id):
+    _invalidate_private_cache(account_id)
     """
     Disconnect = encrypted key aur secret database se poori tarah hatao.
 
@@ -2702,6 +2389,63 @@ def _normalize_open_orders(raw):
 
 _STABLE_ASSETS = {'USD', 'USDT', 'USDC', 'DAI'}
 
+# Private exchange calls ke liye ek hi pool. Pehle har request apna pool
+# banata tha (thread create + destroy), jo zyada users par bekaar kharcha hai.
+_PRIVATE_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='byok')
+
+# Desk har 10 second poll karta hai aur profile page bhi wahi data maangta
+# hai. Bina cache ke ek user ke do tab hi exchange ka rate limit kha jaate.
+# TTL itna chhota hai ki "live" ka matlab nahi badalta.
+PRIVATE_CACHE_TTL = 5.0
+_private_cache = {}
+_private_cache_lock = threading.Lock()
+
+
+def _cached_private(account_id, kind, fetch):
+    """
+    Ek account ke private call ka nateeja TTL tak yaad rakho.
+
+    Key mein account_id hai, aur account ek hi user ka hota hai — isliye kisi
+    doosre user ko ye data nahi mil sakta. Error bhi cache hota hai (warna
+    kharab key har poll par exchange ko hit karti rehti), par TTL ke baad
+    apne aap taaza ho jaata hai.
+    """
+    key = (account_id, kind)
+    now = time.time()
+    with _private_cache_lock:
+        hit = _private_cache.get(key)
+        if hit and (now - hit[0]) < PRIVATE_CACHE_TTL:
+            return hit[1]
+    value = fetch()
+    with _private_cache_lock:
+        _private_cache[key] = (time.time(), value)
+        if len(_private_cache) > 5000:
+            # Bahut purane entries hata do — cache memory leak na bane.
+            cutoff = time.time() - PRIVATE_CACHE_TTL
+            for k in [k for k, v in _private_cache.items() if v[0] < cutoff]:
+                _private_cache.pop(k, None)
+    return value
+
+
+def _invalidate_private_cache(account_id):
+    """Connect / re-verify / disconnect ke baad purana nateeja na dikhe."""
+    with _private_cache_lock:
+        for k in [k for k in _private_cache if k[0] == account_id]:
+            _private_cache.pop(k, None)
+
+
+def _primary_exchange_account(user_id):
+    """
+    User ka default exchange account — sabse haal mein update hua active.
+
+    Desk ko iski zarurat hai taaki use pehle list fetch karke id dhoondhni na
+    pade; ek hi account wale (yaani lagbhag sab) users ke liye ek call bachta hai.
+    """
+    for account in list_exchange_accounts_for_user(user_id):
+        if account.get('is_active'):
+            return get_exchange_account_for_user(account['id'], user_id)
+    return None
+
 
 @app.route('/api/byok/exchange-accounts/<int:account_id>/overview', methods=['GET'])
 @require_auth
@@ -2745,16 +2489,15 @@ def byok_exchange_overview(account_id):
             return data, '', None
 
         # Chaar private call — ek ke baad ek karne par ye page 1-2 second
-        # baithta tha, isliye saath-saath.
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            jobs = {
-                name: pool.submit(call, name)
-                for name in ('get_wallet_balances_strict', 'get_margined_positions', 'get_open_orders', 'get_account_profile')
-            }
-            wallet_raw, balances_error, auth_issue = jobs['get_wallet_balances_strict'].result()
-            positions_raw, positions_error, _ = jobs['get_margined_positions'].result()
-            orders_raw, orders_error, _ = jobs['get_open_orders'].result()
-            profile_raw, _, _ = jobs['get_account_profile'].result()
+        # baithta tha, isliye saath-saath (shared pool par).
+        jobs = {
+            name: _PRIVATE_POOL.submit(_cached_private, account_id, name, lambda n=name: call(n))
+            for name in ('get_wallet_balances_strict', 'get_margined_positions', 'get_open_orders', 'get_account_profile')
+        }
+        wallet_raw, balances_error, auth_issue = jobs['get_wallet_balances_strict'].result()
+        positions_raw, positions_error, _ = jobs['get_margined_positions'].result()
+        orders_raw, orders_error, _ = jobs['get_open_orders'].result()
+        profile_raw, _, _ = jobs['get_account_profile'].result()
 
         balances = _normalize_balances(wallet_raw) if wallet_raw is not None else []
         positions = _normalize_positions(positions_raw) if positions_raw is not None else []
@@ -2962,34 +2705,64 @@ def byok_get_orders():
 @app.route('/api/byok/positions', methods=['GET'])
 @require_auth
 def byok_positions():
+    """
+    Logged-in user ke apne exchange account ki khuli positions.
+
+    `exchange_account_id` optional hai — na do to user ka primary (sabse haal
+    mein update hua active) account use hota hai. Desk ko isse pehle list
+    fetch karne ki zarurat nahi padti.
+
+    Koi account juda hi nahi ho to ye error nahi hai: `connected: false`
+    jaata hai, taaki UI "positions nahi hain" ke bajaye "exchange jodein"
+    dikha sake — dono baaton ka matlab alag hai.
+    """
     try:
-        exchange_account_id = request.args.get('exchange_account_id')
-        if not exchange_account_id:
-            return jsonify({'success': False, 'error': 'exchange_account_id is required'}), 400
+        raw_id = request.args.get('exchange_account_id')
+        if raw_id:
+            try:
+                account = get_exchange_account_for_user(int(raw_id), g.user['id'])
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'error': 'exchange_account_id galat hai'}), 400
+            if not account:
+                return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
+        else:
+            account = _primary_exchange_account(g.user['id'])
 
-        account = get_exchange_account_for_user(int(exchange_account_id), g.user['id'])
-        if not account:
-            return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
-        if not account.get('is_active', False):
-            return jsonify({'success': False, 'error': 'Exchange account is inactive'}), 400
+        if not account or not account.get('is_active'):
+            return jsonify({
+                'success': True,
+                'data': {'connected': False, 'positions': [], 'error': ''},
+            })
 
+        exchange = account['exchange']
         api_key = decrypt_secret(account['api_key_encrypted'])
         secret_key = decrypt_secret(account['secret_key_encrypted'])
-        exchange_client = get_exchange_client(account['exchange'], api_key, secret_key)
-        if exchange_client is None:
-            return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
 
-        symbol = (request.args.get('underlying_asset_symbol') or 'BTC').strip().upper()
-        positions = exchange_client.get_positions(underlying_asset_symbol=symbol)
-        if positions is None:
-            err = (exchange_client.last_error or 'Could not fetch positions').strip()
-            update_exchange_account_status(
-                account['id'],
-                g.user['id'],
-                last_error=err[:400],
-            )
-            return jsonify({'success': False, 'error': err[:400]}), 400
-        return jsonify({'success': True, 'data': positions})
+        def fetch():
+            client_obj = get_exchange_client(exchange, api_key, secret_key)
+            if client_obj is None:
+                return None, 'Exchange adapter available nahi hai'
+            raw = client_obj.get_margined_positions()
+            if raw is None:
+                issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
+                return None, byok_error_message(issue)
+            return raw, ''
+
+        raw, error = _cached_private(account['id'], 'get_margined_positions', fetch)
+        if error:
+            update_exchange_account_status(account['id'], g.user['id'], last_error=error[:400])
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'connected': True,
+                'account_id': account['id'],
+                'exchange': exchange,
+                'label': account.get('label') or '',
+                'positions': _normalize_positions(raw) if raw is not None else [],
+                'error': error,
+            },
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -3030,57 +2803,6 @@ def byok_cancel_order():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/broker-login', methods=['POST'])
-def broker_login():
-    """Delta Exchange Demo broker login endpoint"""
-    try:
-        data = request.get_json()
-        api_key = data.get('api_key', '')
-        secret_key = data.get('secret_key', '')
-        broker = data.get('broker', 'delta_demo')
-        
-        if not api_key or not secret_key:
-            return jsonify({
-                'success': False,
-                'error': 'API Key aur Secret Key required hain'
-            }), 400
-        
-        login_time = save_broker_login_entry(
-            broker=broker,
-            api_key=api_key,
-            secret_key=secret_key,
-            ip_address=request.remote_addr
-        )
-
-        broker_entry = {
-            'broker': broker,
-            'api_key': api_key,
-            'secret_key': secret_key,
-            'login_time': login_time.isoformat(),
-            'ip_address': request.remote_addr
-        }
-
-        print(f"✅ Broker login recorded in DB: {broker} at {broker_entry['login_time']}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'Broker login successful',
-            'broker': broker,
-            'redirect_url': 'https://demo.delta.exchange/app/futures/trade/ETH/ETHUSD'
-        })
-        
-    except Exception as e:
-        print(f"❌ Broker login error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-def get_delta_client():
-    """Delta India client — same static keys as CryptoAPIClient (no login / broker DB)."""
-    return DeltaExchangeClient(API_KEY, SECRET_KEY)
-
 
 # Delta error code -> (reason slug, user-facing message template).
 # Ye sab "keys setup/usable nahi hain" wale cases hain — inka matlab "no open positions" NAHI hai.
@@ -3107,6 +2829,14 @@ DELTA_SETUP_ERRORS = {
     'SignatureMismatch': (
         'signature_mismatch',
         'Delta signature match nahi hua — API secret galat lag raha hai. Key/secret dubara check karein.',
+    ),
+    # Delta ke docs mein yahi galti ulte shabd-kram se bhi likhi hai
+    # ("SignatureExpired"), jise normalizing bhi `expired_signature` se match
+    # nahi kara sakti. Isliye dono naam rakhe hue hain.
+    'SignatureExpired': (
+        'expired_signature',
+        'Delta signature expire ho gaya (server clock out of sync lag raha hai). '
+        'System time sync karke dubara try karein.',
     ),
 }
 
@@ -3182,18 +2912,6 @@ def classify_delta_error(raw_error):
     }
 
 
-def normalize_delta_positions(payload):
-    """Delta ke {success, result} response ko flat positions list bana deta hai."""
-    if payload is None:
-        return []
-    result = payload.get('result', payload) if isinstance(payload, dict) else payload
-    if isinstance(result, dict):
-        result = [result]
-    if not isinstance(result, list):
-        return []
-    return [p for p in result if isinstance(p, dict)]
-
-
 def delta_underlying_asset(symbol):
     """'BTCUSDT' / 'BTCUSD' -> 'BTC'. Quote suffix na mile to symbol as-is."""
     s = (symbol or '').strip().upper()
@@ -3205,214 +2923,15 @@ def delta_underlying_asset(symbol):
     return s
 
 
-@app.route('/api/delta/market-data', methods=['GET'])
-def get_delta_market_data():
-    """Delta Exchange market data fetch karta hai"""
-    try:
-        symbol = request.args.get('symbol', None)
-        delta_client = get_delta_client()
-        data = delta_client.get_market_data(symbol)
-        
-        if data:
-            return jsonify({
-                'success': True,
-                'data': data
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Market data fetch nahi hua'
-            }), 400
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/delta/positions', methods=['GET'])
-def get_delta_positions():
-    """
-    Delta Exchange positions fetch karta hai.
-
-    Response hamesha structured hota hai taki UI bata sake ki positions kyun nahi aayi:
-        {success, configured, reason, message, data: [...]}
-
-    `configured: false` => Delta API keys set/usable nahi hain. Data khali hai, lekin
-    ye "koi open position nahi hai" nahi hai — UI ko ye farq dikhana chahiye.
-
-    Query params (optional):
-        symbol=BTCUSDT | underlying_asset_symbol=BTC | product_id=27
-    Kuch na mile to Delta client BTC underlying par default karta hai.
-    """
-    product_id = (request.args.get('product_id') or '').strip() or None
-    underlying = (request.args.get('underlying_asset_symbol') or '').strip().upper() or None
-    if not underlying and not product_id:
-        underlying = delta_underlying_asset(request.args.get('symbol'))
-
-    if not API_KEY or not SECRET_KEY:
-        return jsonify({
-            'success': True,
-            'configured': False,
-            'reason': 'missing_credentials',
-            'message': 'Delta API key/secret configure nahi hain, isliye live positions load nahi ho sakti.',
-            'data': []
-        })
-
-    try:
-        delta_client = get_delta_client()
-        data = delta_client.get_positions(
-            underlying_asset_symbol=underlying,
-            product_id=product_id
-        )
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'configured': True,
-            'reason': 'request_failed',
-            'message': f'Delta se connect nahi ho paya: {e}',
-            'error': str(e),
-            'data': []
-        }), 502
-
-    if data is not None:
-        return jsonify({
-            'success': True,
-            'configured': True,
-            'reason': None,
-            'message': None,
-            'data': normalize_delta_positions(data)
-        })
-
-    info = classify_delta_error(getattr(delta_client, 'last_error', None))
-    payload = {
-        'success': bool(info['needs_setup']),
-        'configured': not info['needs_setup'],
-        'reason': info['reason'],
-        'message': info['message'],
-        'data': []
-    }
-    if info.get('client_ip'):
-        payload['client_ip'] = info['client_ip']
-
-    if info['needs_setup']:
-        # Setup problem hai, request problem nahi — 200 bhejo taki UI clear reason dikha sake
-        # (400 ko frontend swallow kar leta tha aur panel chup-chaap khali dikhta tha).
-        print(f"\u26a0\ufe0f Delta positions unavailable: {info['reason']} - {info['message']}")
-        return jsonify(payload)
-
-    payload['error'] = info['message']
-    return jsonify(payload), 502
-
-
-@app.route('/api/delta/orders', methods=['GET'])
-def get_delta_orders():
-    """Delta Exchange orders fetch karta hai"""
-    try:
-        symbol = request.args.get('symbol', None)
-        delta_client = get_delta_client()
-        data = delta_client.get_orders(symbol)
-        
-        if data:
-            return jsonify({
-                'success': True,
-                'data': data
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Orders fetch nahi hui'
-            }), 400
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/delta/place-order', methods=['POST'])
-def place_delta_order():
-    """Delta Exchange mein order place karta hai"""
-    try:
-        data = request.get_json()
-        symbol = data.get('symbol', '')
-        side = data.get('side', 'buy')  # 'buy' or 'sell'
-        order_type = data.get('order_type', 'limit')  # 'limit' or 'market'
-        quantity = float(data.get('quantity', 0))
-        price = data.get('price', None)
-        reduce_only = data.get('reduce_only', False)
-        
-        if not symbol or quantity <= 0:
-            return jsonify({
-                'success': False,
-                'error': 'Symbol aur quantity required hain'
-            }), 400
-        
-        delta_client = get_delta_client()
-        result = delta_client.place_order(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=float(price) if price else None,
-            reduce_only=reduce_only
-        )
-        
-        if result:
-            return jsonify({
-                'success': True,
-                'message': 'Order placed successfully',
-                'data': result
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Order place nahi hua'
-            }), 400
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@app.route('/api/delta/cancel-order', methods=['POST'])
-def cancel_delta_order():
-    """Delta Exchange mein order cancel karta hai"""
-    try:
-        data = request.get_json()
-        order_id = data.get('order_id', '')
-        
-        if not order_id:
-            return jsonify({
-                'success': False,
-                'error': 'Order ID required hai'
-            }), 400
-        
-        delta_client = get_delta_client()
-        result = delta_client.cancel_order(order_id)
-        
-        if result:
-            return jsonify({
-                'success': True,
-                'message': 'Order cancelled successfully',
-                'data': result
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Order cancel nahi hua'
-            }), 400
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
 @app.route('/api/place-order', methods=['POST'])
+@require_auth
 def place_order():
-    """Demo order placement endpoint"""
+    """
+    Paper (demo) order — ye exchange par nahi jaata, sirf record banta hai.
+
+    Auth zaroori hai kyunki order us user ke naam se save hota hai; pehle ye
+    khula tha aur sab orders ek hi common list mein chale jaate the.
+    """
     try:
         data = request.get_json()
         symbol = data.get('symbol', '')
@@ -3447,13 +2966,14 @@ def place_order():
             'timestamp': datetime.now().isoformat()
         }
 
-        save_demo_order_entry(order_entry)
+        save_demo_order_entry(order_entry, user_id=g.user['id'])
         
         print(f"✅ Order placed: {side} {quantity} {symbol} @ {price or 'Market'}")
         
         return jsonify({
             'success': True,
-            'message': 'Order placed successfully',
+            'message': 'Paper order record ho gaya (exchange par nahi bheja gaya)',
+            'mode': 'paper',
             'order_id': order_id,
             'data': order_entry
         })
@@ -3467,10 +2987,11 @@ def place_order():
 
 
 @app.route('/api/orders', methods=['GET'])
+@require_auth
 def get_orders():
-    """Get all orders"""
+    """Sirf isi user ke paper orders."""
     try:
-        orders = fetch_recent_orders(limit=50)
+        orders = fetch_recent_orders(limit=50, user_id=g.user['id'])
         return jsonify({
             'success': True,
             'data': orders
@@ -4007,17 +3528,20 @@ def health_check():
 
 @app.route('/')
 def index():
-    """Main page serve karta hai"""
-    try:
-        static_path = os.path.join(os.path.dirname(__file__), 'static', 'index.html')
-        if os.path.exists(static_path):
-            with open(static_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            return Response(html_content, mimetype='text/html')
-        else:
-            return f"File not found at: {static_path}", 404
-    except Exception as e:
-        return f"Error loading page: {str(e)}", 500
+    """
+    Service info.
+
+    Pehle yahan purana single-file dashboard serve hota tha. Wo ab hata diya
+    gaya hai: uske saare private calls server ki apni Delta key se chalte the
+    aur bina login khule the, isliye koi bhi us page se account ka data padh
+    aur order laga sakta tha. Asli UI alag frontend hai.
+    """
+    return jsonify({
+        'service': 'Finowings Desk API',
+        'status': 'ok',
+        'frontend': os.getenv('FRONTEND_URL', ''),
+        'docs': '/api/health',
+    })
 
 
 if __name__ == '__main__':
@@ -4033,14 +3557,9 @@ if __name__ == '__main__':
     print("\n📡 API Endpoints:")
     print("   GET /api/candles - Candle data with EMA")
     print("   GET /api/market-info - Market information")
-    print("   POST /api/login - App login")
-    print("   POST /api/delta-demo-login - Delta Exchange Demo account login")
-    print("   POST /api/broker-login - Delta Exchange broker login")
-    print("   GET /api/delta/market-data - Delta Exchange market data")
-    print("   GET /api/delta/positions - Delta Exchange positions")
-    print("   GET /api/delta/orders - Delta Exchange orders")
-    print("   POST /api/delta/place-order - Place order on Delta Exchange")
-    print("   POST /api/delta/cancel-order - Cancel order on Delta Exchange")
+    print("   POST /api/auth/register | /api/auth/login - User accounts")
+    print("   GET  /api/byok/exchange-accounts - User ki apni exchange keys")
+    print("   GET  /api/byok/positions - User ke apne account ki positions")
     print("   GET /api/backtest - Backtest strategy with 1 month data")
     print("   GET /api/health - Health check")
     print("⚠️  Server stop karne ke liye Ctrl+C press karein\n")

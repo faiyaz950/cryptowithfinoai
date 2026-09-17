@@ -27,6 +27,16 @@ class BrokerLogin(models.Model):
 
 
 class DemoOrder(models.Model):
+    # Pehle demo orders kisi user se jude nahi the, isliye `/api/orders` sabko
+    # sabke orders dikha deta tha. Purani rows ke liye null allowed hai.
+    user = models.ForeignKey(
+        "UserAccount",
+        on_delete=models.CASCADE,
+        related_name="demo_orders",
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     order_id = models.CharField(max_length=64, unique=True)
     symbol = models.CharField(max_length=32)
     side = models.CharField(max_length=16)

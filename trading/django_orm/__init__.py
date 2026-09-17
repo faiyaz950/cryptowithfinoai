@@ -175,95 +175,25 @@ def _parse_dt(value: Any) -> datetime:
     return dt
 
 
-# --- App logins ---
-
-
-def save_login_entry(
-    *,
-    username: str,
-    password: str,
-    login_type: str,
-    ip_address: str = "",
-) -> datetime:
-    _ensure_django()
-    from django_orm.models import AppLogin
-
-    row = AppLogin.objects.create(
-        username=username,
-        password=password,
-        login_type=login_type,
-        ip_address=ip_address or "",
-    )
-    return row.created_at
-
-
-def fetch_login_history(*, limit: int = 50) -> Tuple[int, List[Dict[str, Any]]]:
-    _ensure_django()
-    from django_orm.models import AppLogin
-
-    total = AppLogin.objects.count()
-    rows = AppLogin.objects.all()[:limit]
-    logins = [
-        {
-            "id": r.id,
-            "username": r.username,
-            "login_type": r.login_type,
-            "ip_address": r.ip_address,
-            "created_at": r.created_at.isoformat(),
-        }
-        for r in rows
-    ]
-    return total, logins
-
-
-# --- Broker logins ---
-
-
-def save_broker_login_entry(
-    *,
-    broker: str,
-    api_key: str,
-    secret_key: str,
-    ip_address: str = "",
-) -> datetime:
-    _ensure_django()
-    from django_orm.models import BrokerLogin
-
-    row = BrokerLogin.objects.create(
-        broker=broker,
-        api_key=api_key,
-        secret_key=secret_key,
-        ip_address=ip_address or "",
-    )
-    return row.created_at
-
-
-def get_latest_broker_login() -> Optional[Dict[str, Any]]:
-    _ensure_django()
-    from django_orm.models import BrokerLogin
-
-    r = BrokerLogin.objects.order_by("-created_at").first()
-    if not r:
-        return None
-    return {
-        "broker": r.broker,
-        "api_key": r.api_key,
-        "secret_key": r.secret_key,
-        "ip_address": r.ip_address,
-        "login_time": r.created_at.isoformat(),
-    }
+# --- Legacy login tables ---
+#
+# `app_logins` plaintext password rakhta tha aur `broker_logins` plaintext API
+# key + secret. Jin endpoints se ye bharte the wo hata diye gaye hain, isliye
+# ab koi writer nahi bacha. Models abhi rakhe hue hain taaki purana data khud
+# se delete na ho — usse hatana alag, soch-samajh kar lene wala faisla hai.
 
 
 # --- Demo orders ---
 
 
-def save_demo_order_entry(order_entry: Dict[str, Any]) -> None:
+def save_demo_order_entry(order_entry: Dict[str, Any], *, user_id: Optional[int] = None) -> None:
     _ensure_django()
     from django_orm.models import DemoOrder
 
     ts = _parse_dt(order_entry.get("timestamp"))
     price = order_entry.get("price")
     DemoOrder.objects.create(
+        user_id=user_id,
         order_id=str(order_entry.get("order_id", "")),
         symbol=str(order_entry.get("symbol", "")),
         side=str(order_entry.get("side", "")),
@@ -275,12 +205,23 @@ def save_demo_order_entry(order_entry: Dict[str, Any]) -> None:
     )
 
 
-def fetch_recent_orders(*, limit: int = 50) -> List[Dict[str, Any]]:
+def fetch_recent_orders(*, limit: int = 50, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Demo orders.
+
+    `user_id` dena zaroori hai jab kisi user ko uske orders dikhane hon —
+    bina filter ye poore table ke orders deta hai, jo har user ko doosre ke
+    orders dikha deta tha.
+    """
     _ensure_django()
     from django_orm.models import DemoOrder
 
+    rows = DemoOrder.objects.all()
+    if user_id is not None:
+        rows = rows.filter(user_id=user_id)
+
     out = []
-    for r in DemoOrder.objects.all()[:limit]:
+    for r in rows[:limit]:
         out.append(
             {
                 "order_id": r.order_id,
