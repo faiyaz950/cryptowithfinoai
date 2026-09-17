@@ -300,7 +300,14 @@ def byok_error_message(issue):
     template = BYOK_ERROR_MESSAGES.get(issue.get("reason"))
     if template:
         return template.format(client_ip=issue.get("client_ip") or "server IP")
-    return (issue.get("message") or "Verification fail hui")[:400]
+    message = (issue.get("message") or "").strip()
+    if message.startswith("{") or message.startswith("["):
+        # Exchange ka raw JSON user ke kisi kaam ka nahi — code bata do, baaki
+        # wahi kehna jo wo kar sakta hai.
+        code = (issue.get("code") or "").strip()
+        detail = f" Delta ne kaha: {code}." if code else ""
+        return f"Delta ne ye key accept nahi ki.{detail} API key aur secret dobara copy karein."
+    return message[:400] or "Verification fail hui"
 
 
 def get_exchange_client(exchange, api_key, secret_key):
@@ -3104,6 +3111,21 @@ DELTA_SETUP_ERRORS = {
 }
 
 
+def _delta_code_key(value):
+    """
+    Delta ke error code ko match karne layak banao.
+
+    Delta wahi galti do naamon se bhejta hai — `Signature Mismatch` (space ke
+    saath) aur `signature_mismatch`. Pehle sirf ek spelling map mein thi, to
+    doosri par user ko raw JSON dikh jaata tha. Ab spacing, dash aur case ka
+    farak nahi padta.
+    """
+    return re.sub(r'[^a-z0-9]', '', (value or '').lower())
+
+
+_DELTA_SETUP_ERRORS_BY_KEY = {_delta_code_key(k): (k, v) for k, v in DELTA_SETUP_ERRORS.items()}
+
+
 def classify_delta_error(raw_error):
     """
     Delta ke raw error body ko structured reason + readable message mein badalta hai.
@@ -3129,14 +3151,18 @@ def classify_delta_error(raw_error):
         except Exception:
             pass
 
-    if not code:
-        # Non-JSON body (connection errors etc.) — substring par fall back karo.
-        for known in DELTA_SETUP_ERRORS:
-            if known in raw:
-                code = known
+    entry = None
+    matched = _DELTA_SETUP_ERRORS_BY_KEY.get(_delta_code_key(code))
+    if matched:
+        code, entry = matched[0], matched[1]
+    else:
+        # Code na mila (ya naya naam) — poore body par normalized substring dekho.
+        raw_key = _delta_code_key(raw)
+        for known_key, (known_code, known_entry) in _DELTA_SETUP_ERRORS_BY_KEY.items():
+            if known_key in raw_key:
+                code, entry = code or known_code, known_entry
                 break
 
-    entry = DELTA_SETUP_ERRORS.get(code)
     if entry:
         reason, template = entry
         return {
