@@ -28,6 +28,7 @@ from email.message import EmailMessage
 from werkzeug.security import generate_password_hash, check_password_hash
 from django_orm import (
     init_database,
+    database_backend,
     save_login_entry,
     fetch_login_history,
     save_broker_login_entry,
@@ -206,6 +207,38 @@ def require_auth(func):
         return func(*args, **kwargs)
 
     return wrapper
+
+
+_EGRESS_IP_CACHE = {'ip': None, 'at': 0.0}
+_EGRESS_IP_TTL = 3600.0
+
+
+def _configured_egress_ips():
+    raw = os.getenv('BYOK_EGRESS_IPS', '') or ''
+    seen, ips = set(), []
+    for part in re.split(r'[,\s]+', raw):
+        part = part.strip()
+        if part and part not in seen:
+            seen.add(part)
+            ips.append(part)
+    return ips
+
+
+def _detect_egress_ip():
+    """Apna public IP — ek ghante cache, aur fail ho to chup-chaap None."""
+    now = time.time()
+    if _EGRESS_IP_CACHE['ip'] and now - _EGRESS_IP_CACHE['at'] < _EGRESS_IP_TTL:
+        return _EGRESS_IP_CACHE['ip']
+    for url in ('https://api.ipify.org?format=json', 'https://ifconfig.co/json'):
+        try:
+            data = requests.get(url, timeout=4).json()
+            ip = (data.get('ip') or '').strip()
+            if ip:
+                _EGRESS_IP_CACHE.update(ip=ip, at=now)
+                return ip
+        except Exception:
+            continue
+    return None
 
 
 def validate_exchange_credentials(exchange, api_key, secret_key):
@@ -2028,6 +2061,8 @@ def auth_me():
             'full_name': g.user.get('full_name', ''),
             'email': g.user.get('email', ''),
             'email_verified': g.user.get('email_verified', False),
+            # Profile page "member since" isse dikhata hai.
+            'created_at': g.user.get('created_at'),
         },
         'session': {
             'id': g.session.get('id'),
@@ -2439,6 +2474,32 @@ def byok_list_exchange_accounts():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/byok/egress-ips', methods=['GET'])
+@require_auth
+def byok_egress_ips():
+    """
+    Is server ke outbound IP — exchange par API key ki IP allowlist mein yahi
+    daalne padte hain.
+
+    BYOK_EGRESS_IPS set ho to wahi poori list (hosting dashboard se li gayi).
+    Warna hum apna dikhne wala IP khud detect karte hain: sahi hota hai, par
+    server ek se zyada IP se bahar ja sakta hai, isliye tab list ko "adhoori"
+    mark karte hain taaki UI IP restriction par zid na karaye.
+    """
+    configured = _configured_egress_ips()
+    if configured:
+        return jsonify({'success': True, 'data': {'ips': configured, 'source': 'configured', 'complete': True}})
+    detected = _detect_egress_ip()
+    return jsonify({
+        'success': True,
+        'data': {
+            'ips': [detected] if detected else [],
+            'source': 'detected' if detected else 'unknown',
+            'complete': False,
+        },
+    })
+
+
 @app.route('/api/byok/exchange-accounts/<int:account_id>/verify', methods=['POST'])
 @require_auth
 def byok_verify_exchange(account_id):
@@ -2542,6 +2603,205 @@ def _normalize_balances(raw):
         if asset and (balance or available):
             out.append({'asset': str(asset), 'balance': balance, 'available': available})
     return out
+
+
+_MARK_CACHE = {}
+_MARK_TTL = 10.0
+
+
+def _delta_mark_price(delta_symbol):
+    """Public ticker se mark/last price — 10s cache, fail par None."""
+    key = str(delta_symbol or '').upper()
+    if not key:
+        return None
+    hit = _MARK_CACHE.get(key)
+    now = time.time()
+    if hit and (now - hit[0]) < _MARK_TTL:
+        return hit[1]
+    try:
+        res = requests.get(f"{BASE_URL}/v2/tickers/{key}", timeout=8)
+        res.raise_for_status()
+        t = (res.json() or {}).get('result') or {}
+        price = _fnum(t.get('mark_price')) or _fnum(t.get('close')) or _fnum(t.get('spot_price'))
+        price = price or None
+    except Exception:
+        price = None
+    _MARK_CACHE[key] = (now, price)
+    return price
+
+
+def _normalize_positions(raw):
+    """
+    Delta ki positions ko ek saaf shape mein.
+
+    Unrealized PnL hum khud nahi ginte — uske liye contract size aur inverse/
+    linear ka hisaab chahiye, aur galat number dikhane se behtar hai kuch na
+    dikhana. Jo Delta khud deta hai wahi jaata hai, saath mein entry se mark
+    tak ka price move (jo bilkul exact hai).
+    """
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        size = _fnum(r.get('size'), 0.0)
+        if not size:
+            continue
+        symbol = str(r.get('product_symbol') or (r.get('product') or {}).get('symbol') or '').upper()
+        entry = _fnum(r.get('entry_price'), 0.0)
+        mark = _delta_mark_price(symbol) if symbol else None
+        long_side = size > 0
+        move_pct = None
+        if entry and mark:
+            move_pct = ((mark - entry) / entry) * (1 if long_side else -1) * 100
+        unrealized = r.get('unrealized_pnl')
+        out.append({
+            'symbol': symbol,
+            'side': 'long' if long_side else 'short',
+            'size': abs(size),
+            'entry_price': entry,
+            'mark_price': mark,
+            'move_pct': move_pct,
+            'unrealized_pnl': _fnum(unrealized) if unrealized not in (None, '') else None,
+            'realized_pnl': _fnum(r.get('realized_pnl'), 0.0),
+            'realized_funding': _fnum(r.get('realized_funding'), 0.0),
+            'margin': _fnum(r.get('margin'), 0.0),
+            'liquidation_price': _fnum(r.get('liquidation_price'), 0.0) or None,
+        })
+    return out
+
+
+def _normalize_open_orders(raw):
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        size = _fnum(r.get('size'), 0.0)
+        unfilled = _fnum(r.get('unfilled_size'), size)
+        out.append({
+            'id': r.get('id'),
+            'symbol': str(r.get('product_symbol') or (r.get('product') or {}).get('symbol') or '').upper(),
+            'side': str(r.get('side') or '').lower(),
+            'order_type': str(r.get('order_type') or '').lower(),
+            'size': size,
+            'unfilled_size': unfilled,
+            'price': _fnum(r.get('limit_price'), 0.0) or None,
+            'state': str(r.get('state') or '').lower(),
+            'created_at': r.get('created_at') or '',
+        })
+    return out
+
+
+_STABLE_ASSETS = {'USD', 'USDT', 'USDC', 'DAI'}
+
+
+@app.route('/api/byok/exchange-accounts/<int:account_id>/overview', methods=['GET'])
+@require_auth
+def byok_exchange_overview(account_id):
+    """
+    Profile page ka ek hi call: wallet, positions, open orders aur exchange ka
+    apna profile.
+
+    Har hissa alag try hota hai. Positions fail hone se wallet nahi chhupta —
+    jo mila wo dikhta hai, jo nahi mila uska reason usi hisse par likha hota
+    hai. Isi liye HTTP 200 rehta hai jab tak key khud kaam kar rahi ho.
+    """
+    try:
+        account = get_exchange_account_for_user(account_id, g.user['id'])
+        if not account:
+            return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
+        if not account.get('is_active'):
+            return jsonify({'success': False, 'error': 'Exchange account is inactive'}), 400
+
+        api_key = decrypt_secret(account['api_key_encrypted'])
+        secret_key = decrypt_secret(account['secret_key_encrypted'])
+        if get_exchange_client(account['exchange'], api_key, secret_key) is None:
+            return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
+
+        def call(method_name):
+            """
+            Ek call, apne alag client par.
+
+            Client `last_error` khud par rakhta hai — ek hi client par chaar
+            parallel calls chalane se error kisi doosre section par chipak
+            jaata. Isliye har call ka apna client, aur error usi ke saath wapas.
+            """
+            client_obj = get_exchange_client(account['exchange'], api_key, secret_key)
+            try:
+                data = getattr(client_obj, method_name)()
+            except Exception as exc:
+                return None, str(exc)[:400], None
+            if data is None:
+                issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
+                return None, byok_error_message(issue), issue
+            return data, '', None
+
+        # Chaar private call — ek ke baad ek karne par ye page 1-2 second
+        # baithta tha, isliye saath-saath.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            jobs = {
+                name: pool.submit(call, name)
+                for name in ('get_wallet_balances_strict', 'get_margined_positions', 'get_open_orders', 'get_account_profile')
+            }
+            wallet_raw, balances_error, auth_issue = jobs['get_wallet_balances_strict'].result()
+            positions_raw, positions_error, _ = jobs['get_margined_positions'].result()
+            orders_raw, orders_error, _ = jobs['get_open_orders'].result()
+            profile_raw, _, _ = jobs['get_account_profile'].result()
+
+        balances = _normalize_balances(wallet_raw) if wallet_raw is not None else []
+        positions = _normalize_positions(positions_raw) if positions_raw is not None else []
+        orders = _normalize_open_orders(orders_raw) if orders_raw is not None else []
+        exchange_profile = (
+            extract_exchange_profile_snapshot(profile_raw) if isinstance(profile_raw, dict) and profile_raw else {}
+        )
+
+        # Key theek hai ya nahi — iska faisla wallet se hota hai, wahi sabse
+        # seedha private call hai. Kharab ho to card par dikhne wala last_error
+        # bhi taaza kar dete hain.
+        if wallet_raw is None:
+            update_exchange_account_status(account['id'], g.user['id'], last_error=(balances_error or '')[:400])
+        elif account.get('last_error'):
+            update_exchange_account_status(account['id'], g.user['id'], last_error='')
+
+        cash = sum(b['balance'] for b in balances if b['asset'].upper() in _STABLE_ASSETS)
+        cash_available = sum(b['available'] for b in balances if b['asset'].upper() in _STABLE_ASSETS)
+        reported_pnl = [p['unrealized_pnl'] for p in positions if p['unrealized_pnl'] is not None]
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'account': {
+                    'id': account['id'],
+                    'exchange': account['exchange'],
+                    'label': account.get('label') or '',
+                    'key_hint': account.get('key_hint') or '',
+                    'can_trade': bool(account.get('can_trade')),
+                    'permissions_verified': bool(account.get('permissions_verified')),
+                    # Wallet call se abhi jo pata chala — page ka status pill
+                    # isi se taaza rehta hai, purani list row se nahi.
+                    'last_error': balances_error or '',
+                    'last_verified_at': account.get('last_verified_at'),
+                    'created_at': account.get('created_at'),
+                },
+                'balances': {'items': balances, 'error': balances_error},
+                'positions': {'items': positions, 'error': positions_error},
+                'orders': {'items': orders, 'error': orders_error},
+                'exchange_profile': exchange_profile or None,
+                'totals': {
+                    'cash': cash,
+                    'cash_available': cash_available,
+                    'open_positions': len(positions),
+                    'open_orders': len(orders),
+                    'unrealized_pnl': sum(reported_pnl) if reported_pnl else None,
+                    'realized_pnl': sum(p['realized_pnl'] for p in positions),
+                },
+                'client_ip': (auth_issue or {}).get('client_ip'),
+                'fetched_at': datetime.now(timezone.utc).isoformat(),
+            },
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/byok/exchange-accounts/<int:account_id>/balances', methods=['GET'])
@@ -3706,9 +3966,16 @@ def backtest_strategy():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """API health check"""
+    try:
+        database = database_backend()
+    except Exception:
+        database = None
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        # Engine ka naam hi — accounts permanent DB mein ja rahe hain ya
+        # deploy par mit jane wali file mein, ye bahar se dikhna chahiye.
+        'database': database,
     })
 
 

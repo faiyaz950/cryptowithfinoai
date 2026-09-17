@@ -298,19 +298,10 @@ class DeltaExchangeClient:
         Fetch user/profile/api-key details from private endpoints if available.
         Returns merged dict (best effort), or {} when all endpoints fail.
         """
-        candidates = [
-            "/v2/users/me",
-            "/v2/user",
-            "/v2/users/self",
-            "/v2/profile",
-            "/v2/user/profile",
-            "/v2/account",
-            "/v2/accounts",
-            # Some Delta variants expose API-key metadata here.
-            "/v2/api_keys",
-            "/v2/api-keys",
-            "/v2/api_keys/me",
-        ]
+        # Pehle yahan 10 endpoints try hote the. Delta India par sirf `/v2/profile`
+        # sach mein maujood hai — baaki 404 dete hain aur do to 504 par kai second
+        # khaate hain, jisse profile page bewajah slow ho jaata tha.
+        candidates = ["/v2/profile"]
         merged = {}
         for endpoint in candidates:
             data = self._make_request('GET', endpoint)
@@ -563,6 +554,32 @@ class DeltaExchangeClient:
             params["underlying_asset_symbol"] = "BTC"
         return self._make_request('GET', endpoint, params=params)
     
+    def get_margined_positions(self):
+        """
+        Saari khuli positions ek call mein.
+
+        `/v2/positions` ko product_id ya underlying chahiye, isliye portfolio
+        view ke liye wo theek nahi — ye endpoint poore account ki margined
+        positions deta hai. None = request fail; list = positions (khaali bhi).
+        """
+        data = self._make_request('GET', '/v2/positions/margined')
+        if data is None:
+            return None
+        if isinstance(data, dict):
+            result = data.get('result')
+            return result if isinstance(result, list) else []
+        return data if isinstance(data, list) else []
+
+    def get_open_orders(self):
+        """Sirf pending/open orders — `/v2/orders` default open hi deta hai."""
+        data = self._make_request('GET', '/v2/orders', params={'states': 'open'})
+        if data is None:
+            return None
+        if isinstance(data, dict):
+            result = data.get('result')
+            return result if isinstance(result, list) else []
+        return data if isinstance(data, list) else []
+
     def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False):
         """Order place karta hai"""
         endpoint = "/v2/orders"

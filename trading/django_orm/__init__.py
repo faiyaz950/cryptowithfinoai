@@ -139,6 +139,25 @@ def init_database() -> None:
     print("✅ Django ORM tables ready")
 
 
+def database_backend() -> Dict[str, Any]:
+    """
+    Kaunsa database chal raha hai — sirf engine ka naam aur database ka naam,
+    koi host/user/password nahi.
+
+    Zarurat isliye: hosting par SQLite file har deploy par mit jaati hai, to
+    "accounts kahan save ho rahe hain" ka jawab bahar se dikhna chahiye —
+    warna pata hi tab chalta hai jab login fail ho jaye.
+    """
+    _ensure_django()
+    from django.db import connection
+
+    engine = (connection.settings_dict.get("ENGINE") or "").rsplit(".", 1)[-1]
+    name = connection.settings_dict.get("NAME") or ""
+    if engine == "sqlite3":
+        engine, name = "sqlite", os.path.basename(str(name))
+    return {"engine": engine, "name": str(name), "persistent": engine != "sqlite"}
+
+
 def _parse_dt(value: Any) -> datetime:
     from django.utils import timezone
     from django.utils.dateparse import parse_datetime
@@ -289,6 +308,7 @@ def _user_dict(u) -> Dict[str, Any]:
         "email": u.email or "",
         "email_verified": bool(u.email_verified),
         "is_active": bool(u.is_active),
+        "created_at": u.created_at.isoformat() if u.created_at else None,
     }
 
 
