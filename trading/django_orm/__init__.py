@@ -2,9 +2,11 @@
 Django ORM layer for backend_api.
 
 Default: SQLite file next to this package (`crypto_trading.sqlite3`).
+Optional PostgreSQL: set DATABASE_URL (Render / Neon / Supabase sab yahi dete hain).
 Optional MySQL: set USE_MYSQL=true and MYSQL_* env vars.
 
 Env:
+  DATABASE_URL         - postgres://user:pass@host:port/dbname[?sslmode=require]
   SQLITE_PATH          - full path to SQLite file (optional)
   USE_MYSQL            - "true"/"1" to use MySQL instead of SQLite
   MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
@@ -28,6 +30,37 @@ def _default_sqlite_path() -> str:
     return os.getenv("SQLITE_PATH") or os.path.join(_project_root(), "crypto_trading.sqlite3")
 
 
+def _postgres_settings() -> Optional[Dict[str, Any]]:
+    """
+    DATABASE_URL ko Django DATABASES entry mein badlo.
+
+    Render ka free web service disk permanent nahi rakhta — har deploy/restart
+    par SQLite file mit jaati hai, aur uske saath user accounts, sessions aur
+    judi hui exchange keys bhi. Isliye production ko ek alag database chahiye.
+    URL ke query params (jaise `sslmode=require`) seedhe driver options bante hain.
+    """
+    from urllib.parse import parse_qsl, unquote, urlparse
+
+    raw = (os.getenv("DATABASE_URL") or "").strip()
+    if not raw:
+        return None
+    url = urlparse(raw)
+    if url.scheme not in ("postgres", "postgresql"):
+        raise RuntimeError(f"DATABASE_URL scheme '{url.scheme}' supported nahi — postgres:// chahiye")
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": unquote(url.path.lstrip("/")),
+        "USER": unquote(url.username or ""),
+        "PASSWORD": unquote(url.password or ""),
+        "HOST": url.hostname or "",
+        "PORT": str(url.port or ""),
+        "OPTIONS": dict(parse_qsl(url.query)),
+        # Har request par naya connection na khole; mara hua connection pakad le.
+        "CONN_MAX_AGE": 60,
+        "CONN_HEALTH_CHECKS": True,
+    }
+
+
 def _use_mysql() -> bool:
     return os.getenv("USE_MYSQL", "").strip().lower() in ("1", "true", "yes")
 
@@ -38,7 +71,11 @@ def _configure_settings() -> None:
     if settings.configured:
         return
 
-    if _use_mysql():
+    postgres = _postgres_settings()
+    if postgres:
+        databases = {"default": postgres}
+        print(f"ℹ️ Database: PostgreSQL at {postgres['HOST'] or 'local socket'}/{postgres['NAME']}")
+    elif _use_mysql():
         try:
             import pymysql
 
@@ -260,6 +297,7 @@ def create_user_account(
     password_hash: str,
     *,
     email: str = "",
+    full_name: str = "",
 ) -> Dict[str, Any]:
     _ensure_django()
     from django_orm.models import UserAccount
@@ -268,8 +306,21 @@ def create_user_account(
         username=username,
         password_hash=password_hash,
         email=(email or "").strip().lower(),
+        full_name=(full_name or "").strip()[:50],
     )
-    return {"id": u.id, "username": u.username}
+    return _user_dict(u)
+
+
+def get_user_account_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Email se login ke liye. Email case-insensitive store hota hai."""
+    _ensure_django()
+    from django_orm.models import UserAccount
+
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return None
+    u = UserAccount.objects.filter(email=normalized).order_by("id").first()
+    return _user_dict(u) if u else None
 
 
 def get_user_account_by_username(username: str) -> Optional[Dict[str, Any]]:

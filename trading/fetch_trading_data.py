@@ -328,6 +328,20 @@ class DeltaExchangeClient:
                     merged.update(data)
         return merged
 
+    def get_wallet_balances_strict(self):
+        """
+        Sirf Delta ka documented `/v2/wallet/balances`. Fail ho to `last_error`
+        isi request ka rehta hai — `get_wallet_balances` kai fallback URLs try
+        karta hai aur aakhri URL ka 404 asli error (jaise invalid_api_key) ko
+        dhak deta tha. None = request fail hui; list = balances (khaali bhi ho sakti).
+        """
+        data = self._make_request('GET', '/v2/wallet/balances')
+        if data is None:
+            return None
+        if isinstance(data, dict) and 'result' in data:
+            return data.get('result') or []
+        return data
+
     def get_wallet_balances(self):
         """
         Fetch wallet/balance details from private endpoints (best effort).

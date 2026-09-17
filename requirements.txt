@@ -29,6 +29,8 @@ websocket-client>=1.5.0
 # ── Storage aur crypto ────────────────────────────────────
 django>=4.2,<5
 PyMySQL>=1.1.0
+# DATABASE_URL (Postgres) ke liye — Render free par SQLite har deploy par mit jaati hai.
+psycopg2-binary>=2.9.9,<3
 cryptography>=42.0.0
 
 # ── Optional: standalone backtrader script ────────────────

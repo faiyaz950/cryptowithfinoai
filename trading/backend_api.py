@@ -9,7 +9,7 @@ from flask import Flask, jsonify, request, Response, g
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 from fetch_trading_data import BASE_URL, CryptoAPIClient, DeltaExchangeClient, to_delta_symbol
 import os
@@ -36,6 +36,7 @@ from django_orm import (
     fetch_recent_orders,
     create_user_account,
     get_user_account_by_username,
+    get_user_account_by_email,
     get_user_account_by_id,
     update_user_account_fields,
     create_user_session,
@@ -223,18 +224,50 @@ def validate_exchange_credentials(exchange, api_key, secret_key):
         return {
             "success": True,
             "can_trade": True,
+            # Delta ka API ye nahi batata ki key par withdrawal on hai ya nahi —
+            # isliye hum ise "verified off" nahi kehte. UI user ko khud band
+            # rakhne ko kehta hai.
             "can_withdraw": False,
             "permissions_verified": True,
             "error": "",
         }
-    err = (delta_client.last_error or "Credential verification failed").strip()
+    issue = classify_delta_error(delta_client.last_error or "")
     return {
         "success": False,
         "can_trade": False,
         "can_withdraw": False,
         "permissions_verified": False,
-        "error": err[:400],
+        "reason": issue.get("reason"),
+        "client_ip": issue.get("client_ip"),
+        "error": byok_error_message(issue),
     }
+
+
+# Server ki static keys wale messages "backend mein key set karo" kehte hain.
+# Yahan key user ki apni hai, to wahi baat user ki zubaan mein.
+BYOK_ERROR_MESSAGES = {
+    "ip_not_whitelisted": (
+        "Aapki API key par IP whitelist laga hai. Delta Exchange → API Keys mein key edit karke "
+        "ye IP add karein: {client_ip}"
+    ),
+    "invalid_api_key": (
+        "API key sahi nahi hai. Dhyan dein ki key india.delta.exchange ke account se bani ho, "
+        "aur poori copy hui ho."
+    ),
+    "unauthorized": (
+        "Is key ko zaroori permission nahi hai. Delta par key edit karke Read Data aur Trading "
+        "permission on karein."
+    ),
+    "expired_signature": "Delta se time match nahi hua. Kuch second baad dobara try karein.",
+    "signature_mismatch": "API secret galat hai. Secret dobara copy karein — aage-peeche koi space na ho.",
+}
+
+
+def byok_error_message(issue):
+    template = BYOK_ERROR_MESSAGES.get(issue.get("reason"))
+    if template:
+        return template.format(client_ip=issue.get("client_ip") or "server IP")
+    return (issue.get("message") or "Verification fail hui")[:400]
 
 
 def get_exchange_client(exchange, api_key, secret_key):
@@ -1733,7 +1766,17 @@ def auth_register():
         payload = request.get_json(silent=True) or {}
         username = (payload.get('username') or '').strip()
         password = payload.get('password') or ''
-        email = (payload.get('email') or '').strip()
+        email = (payload.get('email') or '').strip().lower()
+        full_name = (payload.get('full_name') or '').strip()
+
+        # Desk ka sign-up form naam + email + password maangta hai, username
+        # nahi. Username na aaye to email se ek unique bana lo.
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            return jsonify({'success': False, 'error': 'Valid email address daalein'}), 400
+        if not username:
+            if not email:
+                return jsonify({'success': False, 'error': 'Email ya username zaroori hai'}), 400
+            username = make_unique_username(email.split('@', 1)[0])
 
         if not validate_username(username):
             return jsonify({
@@ -1747,9 +1790,12 @@ def auth_register():
             }), 400
         if get_user_account_by_username(username):
             return jsonify({'success': False, 'error': 'Username already exists'}), 409
+        # Email se login hota hai, isliye ek email ek hi account.
+        if email and get_user_account_by_email(email):
+            return jsonify({'success': False, 'error': 'Is email se account pehle se bana hai — login karein'}), 409
 
         password_hash = hash_password(password)
-        created_user = create_user_account(username, password_hash, email=email)
+        created_user = create_user_account(username, password_hash, email=email, full_name=full_name)
 
         session_token = secrets.token_urlsafe(48)
         expires_at = datetime.now() + timedelta(hours=SESSION_TTL_HOURS)
@@ -1785,10 +1831,15 @@ def auth_login():
         return jsonify({'success': False, 'error': 'Database unavailable'}), 503
     try:
         payload = request.get_json(silent=True) or {}
-        username = (payload.get('username') or '').strip()
+        identifier = (payload.get('username') or payload.get('email') or '').strip()
         password = payload.get('password') or ''
 
-        user = get_user_account_by_username(username)
+        # Username ya email — dono se login. '@' ho to email maano.
+        user = (
+            get_user_account_by_email(identifier)
+            if '@' in identifier
+            else get_user_account_by_username(identifier)
+        )
         if not user:
             return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
         if not user.get('is_active', False):
@@ -2299,7 +2350,7 @@ def byok_connect_exchange():
         exchange = (payload.get('exchange') or '').strip().lower()
         api_key = (payload.get('api_key') or '').strip()
         secret_key = (payload.get('secret_key') or '').strip()
-        label = (payload.get('label') or 'Primary').strip()
+        label = ((payload.get('label') or 'Primary').strip() or 'Primary')[:40]
 
         if exchange not in SUPPORTED_EXCHANGES:
             return jsonify({'success': False, 'error': f'Unsupported exchange: {exchange}'}), 400
@@ -2311,22 +2362,54 @@ def byok_connect_exchange():
             return jsonify({
                 'success': False,
                 'error': verify.get('error') or 'Credential verification failed',
+                'reason': verify.get('reason'),
+                'client_ip': verify.get('client_ip'),
                 'exchange': exchange,
             }), 400
 
-        account_id = create_exchange_account(
-            user_id=g.user['id'],
-            exchange=exchange,
-            api_key_encrypted=encrypt_secret(api_key),
-            secret_key_encrypted=encrypt_secret(secret_key),
-            api_key_fingerprint=api_key_fingerprint(exchange, api_key),
+        fingerprint = api_key_fingerprint(exchange, api_key)
+        existing = get_exchange_account_by_fingerprint(exchange, fingerprint)
+        if existing and existing.get('user_id') != g.user['id']:
+            # Ek hi key do accounts se nahi judni chahiye — warna ek user doosre
+            # ke naam par trade kar sakta hai.
+            return jsonify({
+                'success': False,
+                'error': 'Ye API key pehle se kisi aur account se judi hai.',
+                'reason': 'key_in_use',
+            }), 409
+
+        status = dict(
             label=label,
-            key_hint=key_hint(api_key),
+            is_active=True,
             can_trade=verify.get('can_trade', False),
             can_withdraw=verify.get('can_withdraw', False),
             permissions_verified=verify.get('permissions_verified', False),
             last_error='',
+            last_verified_at=datetime.now(timezone.utc),
         )
+        if existing:
+            # Wahi user wahi key dobara jod raha hai — naya record nahi, purana
+            # taaza credentials ke saath wapas chalu.
+            account_id = existing['id']
+            update_exchange_account_credentials(
+                account_id,
+                g.user['id'],
+                api_key_encrypted=encrypt_secret(api_key),
+                secret_key_encrypted=encrypt_secret(secret_key),
+                api_key_fingerprint=fingerprint,
+                key_hint=key_hint(api_key),
+            )
+        else:
+            account_id = create_exchange_account(
+                user_id=g.user['id'],
+                exchange=exchange,
+                api_key_encrypted=encrypt_secret(api_key),
+                secret_key_encrypted=encrypt_secret(secret_key),
+                api_key_fingerprint=fingerprint,
+                label=label,
+                key_hint=key_hint(api_key),
+            )
+        update_exchange_account_status(account_id, g.user['id'], **status)
 
         return jsonify({
             'success': True,
@@ -2370,19 +2453,22 @@ def byok_verify_exchange(account_id):
         secret_key = decrypt_secret(account['secret_key_encrypted'])
         verify = validate_exchange_credentials(account['exchange'], api_key, secret_key)
 
-        update_exchange_account_status(
-            account_id,
-            g.user['id'],
+        status_update = dict(
             can_trade=verify.get('can_trade', False),
             can_withdraw=verify.get('can_withdraw', False),
             permissions_verified=verify.get('permissions_verified', False),
             last_error=verify.get('error', ''),
         )
+        if verify['success']:
+            status_update['last_verified_at'] = datetime.now(timezone.utc)
+        update_exchange_account_status(account_id, g.user['id'], **status_update)
 
         if not verify['success']:
             return jsonify({
                 'success': False,
                 'error': verify.get('error') or 'Credential verification failed',
+                'reason': verify.get('reason'),
+                'client_ip': verify.get('client_ip'),
             }), 400
         return jsonify({
             'success': True,
@@ -2414,6 +2500,75 @@ def byok_revoke_exchange(account_id):
             last_error='revoked_by_user',
         )
         return jsonify({'success': True, 'message': 'Exchange account revoked'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/byok/exchange-accounts/<int:account_id>', methods=['DELETE'])
+@require_auth
+def byok_delete_exchange(account_id):
+    """
+    Disconnect = encrypted key aur secret database se poori tarah hatao.
+
+    `revoke` sirf account ko inactive karta tha aur credentials DB mein pade
+    rehte the. User "disconnect" dabaye to uski trading key humare paas nahi
+    rehni chahiye.
+    """
+    try:
+        if not delete_exchange_account_for_user(account_id, g.user['id']):
+            return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
+        return jsonify({'success': True, 'message': 'Exchange disconnected and credentials deleted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _normalize_balances(raw):
+    """Delta wallet response ko {asset, balance, available} list mein badlo; khaali assets hatao."""
+    if isinstance(raw, dict):
+        rows = raw.get('result') if isinstance(raw.get('result'), list) else [raw]
+    elif isinstance(raw, list):
+        rows = raw
+    else:
+        rows = []
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        asset = r.get('asset_symbol')
+        if not asset and isinstance(r.get('asset'), dict):
+            asset = r['asset'].get('symbol')
+        balance = _fnum(r.get('balance'), 0.0)
+        available = _fnum(r.get('available_balance'), balance)
+        if asset and (balance or available):
+            out.append({'asset': str(asset), 'balance': balance, 'available': available})
+    return out
+
+
+@app.route('/api/byok/exchange-accounts/<int:account_id>/balances', methods=['GET'])
+@require_auth
+def byok_exchange_balances(account_id):
+    """Card par wallet balance — saboot ki key sach mein kaam kar rahi hai."""
+    try:
+        account = get_exchange_account_for_user(account_id, g.user['id'])
+        if not account or not account.get('is_active'):
+            return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
+        client_obj = get_exchange_client(
+            account['exchange'],
+            decrypt_secret(account['api_key_encrypted']),
+            decrypt_secret(account['secret_key_encrypted']),
+        )
+        if client_obj is None:
+            return jsonify({'success': False, 'error': 'Exchange not supported'}), 400
+        raw = client_obj.get_wallet_balances_strict()
+        if raw is None:
+            issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
+            return jsonify({
+                'success': False,
+                'error': byok_error_message(issue),
+                'reason': issue.get('reason'),
+                'client_ip': issue.get('client_ip'),
+            }), 400
+        return jsonify({'success': True, 'data': _normalize_balances(raw)})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
