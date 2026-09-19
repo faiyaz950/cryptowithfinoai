@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 import time
-from fetch_trading_data import BASE_URL, CryptoAPIClient, DeltaExchangeClient, to_delta_symbol
+from fetch_trading_data import BASE_URL, CryptoAPIClient, to_delta_symbol
+from exchanges import SUPPORTED_EXCHANGES, catalogue, exchange_name, get_adapter, message_for
 import os
 import base64
 import hashlib
@@ -102,7 +103,6 @@ _db_thread.start()
 _db_thread.join()
 
 
-SUPPORTED_EXCHANGES = {"delta", "binance", "bybit"}
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))
 MAX_ORDER_QTY = float(os.getenv("BYOK_MAX_ORDER_QTY", "1000"))
 EMAIL_OTP_TTL_MINUTES = int(os.getenv("EMAIL_OTP_TTL_MINUTES", "10"))
@@ -238,93 +238,23 @@ def _detect_egress_ip():
 
 
 def validate_exchange_credentials(exchange, api_key, secret_key):
-    exchange = (exchange or "").lower().strip()
-    if exchange != "delta":
+    """Key sach mein chalti hai? Kaunsa exchange hai, ye adapter tay karta hai."""
+    adapter = get_adapter(exchange, api_key, secret_key)
+    if adapter is None:
         return {
             "success": False,
             "can_trade": False,
             "can_withdraw": False,
             "permissions_verified": False,
-            "error": f"{exchange} BYOK adapter not implemented yet. Use delta for now.",
+            "reason": "adapter_missing",
+            "error": message_for("adapter_missing", exchange=exchange_name(exchange)),
         }
-    delta_client = DeltaExchangeClient(api_key, secret_key)
-    probe = delta_client.get_positions(underlying_asset_symbol="BTC")
-    if probe is not None:
-        return {
-            "success": True,
-            "can_trade": True,
-            # Delta ka API ye nahi batata ki key par withdrawal on hai ya nahi —
-            # isliye hum ise "verified off" nahi kehte. UI user ko khud band
-            # rakhne ko kehta hai.
-            "can_withdraw": False,
-            "permissions_verified": True,
-            "error": "",
-        }
-    issue = classify_delta_error(delta_client.last_error or "")
-    return {
-        "success": False,
-        "can_trade": False,
-        "can_withdraw": False,
-        "permissions_verified": False,
-        "reason": issue.get("reason"),
-        "client_ip": issue.get("client_ip"),
-        "error": byok_error_message(issue),
-    }
-
-
-# Server ki static keys wale messages "backend mein key set karo" kehte hain.
-# Yahan key user ki apni hai, to wahi baat user ki zubaan mein.
-BYOK_ERROR_MESSAGES = {
-    "ip_not_whitelisted": (
-        "Aapki API key par IP whitelist laga hai. Delta Exchange → API Management mein key edit "
-        "karke ye IP add karein: {client_ip} (ek se zyada IP comma se daal sakte hain)."
-    ),
-    "invalid_api_key": (
-        "API key sahi nahi hai. Dhyan dein ki key india.delta.exchange ke account se bani ho, "
-        "aur poori copy hui ho."
-    ),
-    "unauthorized": (
-        "Is key ko zaroori permission nahi hai. Delta → API Management mein key par Read Data aur "
-        "Trading dono on karein — balance aur positions ke liye Trading permission zaroori hai."
-    ),
-    "expired_signature": "Delta se time match nahi hua. Kuch second baad dobara try karein.",
-    "signature_mismatch": "API secret galat hai. Secret dobara copy karein — aage-peeche koi space na ho.",
-}
-
-
-def byok_error_message(issue):
-    template = BYOK_ERROR_MESSAGES.get(issue.get("reason"))
-    if template:
-        return template.format(client_ip=issue.get("client_ip") or "server IP")
-    message = (issue.get("message") or "").strip()
-    if message.startswith("{") or message.startswith("["):
-        # Exchange ka raw JSON user ke kisi kaam ka nahi — code bata do, baaki
-        # wahi kehna jo wo kar sakta hai.
-        code = (issue.get("code") or "").strip()
-        detail = f" Delta ne kaha: {code}." if code else ""
-        return f"Delta ne ye key accept nahi ki.{detail} API key aur secret dobara copy karein."
-    return message[:400] or "Verification fail hui"
-
-
-def get_exchange_client(exchange, api_key, secret_key):
-    exchange = (exchange or "").lower().strip()
-    if exchange == "delta":
-        return DeltaExchangeClient(api_key, secret_key)
-    return None
+    return adapter.verify()
 
 
 def fetch_exchange_profile(exchange, api_key, secret_key):
-    client_obj = get_exchange_client(exchange, api_key, secret_key)
-    if client_obj is None:
-        return {}
-    try:
-        if hasattr(client_obj, "get_account_profile"):
-            profile = client_obj.get_account_profile()
-            if isinstance(profile, dict):
-                return profile
-    except Exception:
-        pass
-    return {}
+    adapter = get_adapter(exchange, api_key, secret_key)
+    return adapter.profile() if adapter else {}
 
 
 def _deep_find_first(data, keys):
@@ -497,8 +427,8 @@ def extract_wallet_snapshot(wallet_data):
 
 
 def fetch_live_delta_metadata(account_full):
-    exchange_profile = {}
-    wallet_snapshot = {}
+    """Legacy /api/profile ke liye — ab adapter se, sirf delta se nahi."""
+    exchange_profile, wallet_snapshot = {}, {}
     auth_proof = {"private_api_access": False, "last_auth_error": ""}
     fingerprint_masked = _mask_fingerprint(account_full.get("api_key_fingerprint", ""))
     encrypted_key = account_full.get("api_key_encrypted") or ""
@@ -507,22 +437,18 @@ def fetch_live_delta_metadata(account_full):
         return exchange_profile, wallet_snapshot, auth_proof, fingerprint_masked
 
     try:
-        api_key = decrypt_secret(encrypted_key)
-        secret_key = decrypt_secret(encrypted_secret)
-        client_obj = get_exchange_client("delta", api_key, secret_key)
-        if client_obj:
-            live_profile = client_obj.get_account_profile()
-            exchange_profile = extract_exchange_profile_snapshot(live_profile if isinstance(live_profile, dict) else {})
-
-            wallet_data = {}
-            if hasattr(client_obj, "get_wallet_balances"):
-                wallet_data = client_obj.get_wallet_balances()
-            wallet_snapshot = extract_wallet_snapshot(wallet_data)
-
-            auth_ok = bool(exchange_profile.get("has_profile_data")) or bool(wallet_snapshot.get("has_wallet_data"))
+        adapter = get_adapter(
+            account_full.get("exchange") or "delta",
+            decrypt_secret(encrypted_key),
+            decrypt_secret(encrypted_secret),
+        )
+        if adapter:
+            exchange_profile = extract_exchange_profile_snapshot(adapter.profile() or {})
+            wallet_snapshot = extract_wallet_snapshot(adapter.balances() or [])
             auth_proof = {
-                "private_api_access": auth_ok,
-                "last_auth_error": (client_obj.last_error or "")[:300],
+                "private_api_access": bool(exchange_profile.get("has_profile_data"))
+                or bool(wallet_snapshot.get("has_wallet_data")),
+                "last_auth_error": (adapter.last_error or "")[:300],
             }
     except Exception as e:
         auth_proof = {"private_api_access": False, "last_auth_error": str(e)[:300]}
@@ -2166,6 +2092,18 @@ def byok_list_exchange_accounts():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/byok/exchanges', methods=['GET'])
+def byok_exchanges():
+    """
+    Kaun se exchange jud sakte hain.
+
+    UI ye list yahin se leta hai, apne andar hardcode nahi karta — warna naya
+    adapter jodne par frontend purani list dikhata rehta, ya aisa exchange
+    dikha deta jise backend accept hi nahi karta.
+    """
+    return jsonify({'success': True, 'data': catalogue()})
+
+
 @app.route('/api/byok/egress-ips', methods=['GET'])
 @require_auth
 def byok_egress_ips():
@@ -2277,116 +2215,6 @@ def byok_delete_exchange(account_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-def _normalize_balances(raw):
-    """Delta wallet response ko {asset, balance, available} list mein badlo; khaali assets hatao."""
-    if isinstance(raw, dict):
-        rows = raw.get('result') if isinstance(raw.get('result'), list) else [raw]
-    elif isinstance(raw, list):
-        rows = raw
-    else:
-        rows = []
-    out = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        asset = r.get('asset_symbol')
-        if not asset and isinstance(r.get('asset'), dict):
-            asset = r['asset'].get('symbol')
-        balance = _fnum(r.get('balance'), 0.0)
-        available = _fnum(r.get('available_balance'), balance)
-        if asset and (balance or available):
-            out.append({'asset': str(asset), 'balance': balance, 'available': available})
-    return out
-
-
-_MARK_CACHE = {}
-_MARK_TTL = 10.0
-
-
-def _delta_mark_price(delta_symbol):
-    """Public ticker se mark/last price — 10s cache, fail par None."""
-    key = str(delta_symbol or '').upper()
-    if not key:
-        return None
-    hit = _MARK_CACHE.get(key)
-    now = time.time()
-    if hit and (now - hit[0]) < _MARK_TTL:
-        return hit[1]
-    try:
-        res = requests.get(f"{BASE_URL}/v2/tickers/{key}", timeout=8)
-        res.raise_for_status()
-        t = (res.json() or {}).get('result') or {}
-        price = _fnum(t.get('mark_price')) or _fnum(t.get('close')) or _fnum(t.get('spot_price'))
-        price = price or None
-    except Exception:
-        price = None
-    _MARK_CACHE[key] = (now, price)
-    return price
-
-
-def _normalize_positions(raw):
-    """
-    Delta ki positions ko ek saaf shape mein.
-
-    Unrealized PnL hum khud nahi ginte — uske liye contract size aur inverse/
-    linear ka hisaab chahiye, aur galat number dikhane se behtar hai kuch na
-    dikhana. Jo Delta khud deta hai wahi jaata hai, saath mein entry se mark
-    tak ka price move (jo bilkul exact hai).
-    """
-    rows = raw if isinstance(raw, list) else []
-    out = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        size = _fnum(r.get('size'), 0.0)
-        if not size:
-            continue
-        symbol = str(r.get('product_symbol') or (r.get('product') or {}).get('symbol') or '').upper()
-        entry = _fnum(r.get('entry_price'), 0.0)
-        mark = _delta_mark_price(symbol) if symbol else None
-        long_side = size > 0
-        move_pct = None
-        if entry and mark:
-            move_pct = ((mark - entry) / entry) * (1 if long_side else -1) * 100
-        unrealized = r.get('unrealized_pnl')
-        out.append({
-            'symbol': symbol,
-            'side': 'long' if long_side else 'short',
-            'size': abs(size),
-            'entry_price': entry,
-            'mark_price': mark,
-            'move_pct': move_pct,
-            'unrealized_pnl': _fnum(unrealized) if unrealized not in (None, '') else None,
-            'realized_pnl': _fnum(r.get('realized_pnl'), 0.0),
-            'realized_funding': _fnum(r.get('realized_funding'), 0.0),
-            'margin': _fnum(r.get('margin'), 0.0),
-            'liquidation_price': _fnum(r.get('liquidation_price'), 0.0) or None,
-        })
-    return out
-
-
-def _normalize_open_orders(raw):
-    rows = raw if isinstance(raw, list) else []
-    out = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        size = _fnum(r.get('size'), 0.0)
-        unfilled = _fnum(r.get('unfilled_size'), size)
-        out.append({
-            'id': r.get('id'),
-            'symbol': str(r.get('product_symbol') or (r.get('product') or {}).get('symbol') or '').upper(),
-            'side': str(r.get('side') or '').lower(),
-            'order_type': str(r.get('order_type') or '').lower(),
-            'size': size,
-            'unfilled_size': unfilled,
-            'price': _fnum(r.get('limit_price'), 0.0) or None,
-            'state': str(r.get('state') or '').lower(),
-            'created_at': r.get('created_at') or '',
-        })
-    return out
-
-
 _STABLE_ASSETS = {'USD', 'USDT', 'USDC', 'DAI'}
 
 # Private exchange calls ke liye ek hi pool. Pehle har request apna pool
@@ -2465,43 +2293,45 @@ def byok_exchange_overview(account_id):
         if not account.get('is_active'):
             return jsonify({'success': False, 'error': 'Exchange account is inactive'}), 400
 
+        exchange = account['exchange']
         api_key = decrypt_secret(account['api_key_encrypted'])
         secret_key = decrypt_secret(account['secret_key_encrypted'])
-        if get_exchange_client(account['exchange'], api_key, secret_key) is None:
+        if get_adapter(exchange, api_key, secret_key) is None:
             return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
 
         def call(method_name):
             """
-            Ek call, apne alag client par.
+            Ek call, apne alag adapter par.
 
-            Client `last_error` khud par rakhta hai — ek hi client par chaar
+            Adapter `last_error` khud par rakhta hai — ek hi adapter par chaar
             parallel calls chalane se error kisi doosre section par chipak
-            jaata. Isliye har call ka apna client, aur error usi ke saath wapas.
+            jaata. Isliye har call ka apna adapter, aur error usi ke saath wapas.
             """
-            client_obj = get_exchange_client(account['exchange'], api_key, secret_key)
+            adapter = get_adapter(exchange, api_key, secret_key)
             try:
-                data = getattr(client_obj, method_name)()
+                data = getattr(adapter, method_name)()
             except Exception as exc:
                 return None, str(exc)[:400], None
             if data is None:
-                issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
-                return None, byok_error_message(issue), issue
+                return None, adapter.error_message(), {'client_ip': adapter.last_client_ip}
             return data, '', None
 
         # Chaar private call — ek ke baad ek karne par ye page 1-2 second
         # baithta tha, isliye saath-saath (shared pool par).
         jobs = {
             name: _PRIVATE_POOL.submit(_cached_private, account_id, name, lambda n=name: call(n))
-            for name in ('get_wallet_balances_strict', 'get_margined_positions', 'get_open_orders', 'get_account_profile')
+            for name in ('balances', 'positions', 'open_orders', 'profile')
         }
-        wallet_raw, balances_error, auth_issue = jobs['get_wallet_balances_strict'].result()
-        positions_raw, positions_error, _ = jobs['get_margined_positions'].result()
-        orders_raw, orders_error, _ = jobs['get_open_orders'].result()
-        profile_raw, _, _ = jobs['get_account_profile'].result()
+        # Adapter pehle se desk ke common shape mein deta hai — yahan kisi
+        # exchange-specific normalizer ki zarurat nahi.
+        balances, balances_error, auth_issue = jobs['balances'].result()
+        positions, positions_error, _ = jobs['positions'].result()
+        orders, orders_error, _ = jobs['open_orders'].result()
+        profile_raw, _, _ = jobs['profile'].result()
 
-        balances = _normalize_balances(wallet_raw) if wallet_raw is not None else []
-        positions = _normalize_positions(positions_raw) if positions_raw is not None else []
-        orders = _normalize_open_orders(orders_raw) if orders_raw is not None else []
+        balances = balances or []
+        positions = positions or []
+        orders = orders or []
         exchange_profile = (
             extract_exchange_profile_snapshot(profile_raw) if isinstance(profile_raw, dict) and profile_raw else {}
         )
@@ -2509,8 +2339,8 @@ def byok_exchange_overview(account_id):
         # Key theek hai ya nahi — iska faisla wallet se hota hai, wahi sabse
         # seedha private call hai. Kharab ho to card par dikhne wala last_error
         # bhi taaza kar dete hain.
-        if wallet_raw is None:
-            update_exchange_account_status(account['id'], g.user['id'], last_error=(balances_error or '')[:400])
+        if balances_error:
+            update_exchange_account_status(account['id'], g.user['id'], last_error=balances_error[:400])
         elif account.get('last_error'):
             update_exchange_account_status(account['id'], g.user['id'], last_error='')
 
@@ -2562,23 +2392,22 @@ def byok_exchange_balances(account_id):
         account = get_exchange_account_for_user(account_id, g.user['id'])
         if not account or not account.get('is_active'):
             return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
-        client_obj = get_exchange_client(
+        adapter = get_adapter(
             account['exchange'],
             decrypt_secret(account['api_key_encrypted']),
             decrypt_secret(account['secret_key_encrypted']),
         )
-        if client_obj is None:
+        if adapter is None:
             return jsonify({'success': False, 'error': 'Exchange not supported'}), 400
-        raw = client_obj.get_wallet_balances_strict()
-        if raw is None:
-            issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
+        rows = adapter.balances()
+        if rows is None:
             return jsonify({
                 'success': False,
-                'error': byok_error_message(issue),
-                'reason': issue.get('reason'),
-                'client_ip': issue.get('client_ip'),
+                'error': adapter.error_message(),
+                'reason': adapter.last_reason,
+                'client_ip': adapter.last_client_ip,
             }), 400
-        return jsonify({'success': True, 'data': _normalize_balances(raw)})
+        return jsonify({'success': True, 'data': rows})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2624,7 +2453,7 @@ def byok_place_order():
 
         api_key = decrypt_secret(account['api_key_encrypted'])
         secret_key = decrypt_secret(account['secret_key_encrypted'])
-        exchange_client = get_exchange_client(account['exchange'], api_key, secret_key)
+        exchange_client = get_adapter(account['exchange'], api_key, secret_key)
         if exchange_client is None:
             return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
 
@@ -2637,7 +2466,7 @@ def byok_place_order():
             reduce_only=reduce_only,
         )
         if not result:
-            err = (exchange_client.last_error or 'Order placement failed').strip()
+            err = (exchange_client.error_message() or 'Order placement failed').strip()
             update_exchange_account_status(
                 exchange_account_id,
                 g.user['id'],
@@ -2739,14 +2568,13 @@ def byok_positions():
         secret_key = decrypt_secret(account['secret_key_encrypted'])
 
         def fetch():
-            client_obj = get_exchange_client(exchange, api_key, secret_key)
-            if client_obj is None:
-                return None, 'Exchange adapter available nahi hai'
-            raw = client_obj.get_margined_positions()
-            if raw is None:
-                issue = classify_delta_error(getattr(client_obj, 'last_error', '') or '')
-                return None, byok_error_message(issue)
-            return raw, ''
+            adapter = get_adapter(exchange, api_key, secret_key)
+            if adapter is None:
+                return None, message_for('adapter_missing', exchange=exchange_name(exchange))
+            rows = adapter.positions()
+            if rows is None:
+                return None, adapter.error_message()
+            return rows, ''
 
         raw, error = _cached_private(account['id'], 'get_margined_positions', fetch)
         if error:
@@ -2759,7 +2587,7 @@ def byok_positions():
                 'account_id': account['id'],
                 'exchange': exchange,
                 'label': account.get('label') or '',
-                'positions': _normalize_positions(raw) if raw is not None else [],
+                'positions': raw if raw is not None else [],
                 'error': error,
             },
         })
@@ -2784,13 +2612,13 @@ def byok_cancel_order():
 
         api_key = decrypt_secret(account['api_key_encrypted'])
         secret_key = decrypt_secret(account['secret_key_encrypted'])
-        exchange_client = get_exchange_client(account['exchange'], api_key, secret_key)
+        exchange_client = get_adapter(account['exchange'], api_key, secret_key)
         if exchange_client is None:
             return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
 
         result = exchange_client.cancel_order(order_id)
         if not result:
-            err = (exchange_client.last_error or 'Order cancel failed').strip()
+            err = (exchange_client.error_message() or 'Order cancel failed').strip()
             update_exchange_account_status(
                 account['id'],
                 g.user['id'],
@@ -2806,123 +2634,6 @@ def byok_cancel_order():
 
 # Delta error code -> (reason slug, user-facing message template).
 # Ye sab "keys setup/usable nahi hain" wale cases hain — inka matlab "no open positions" NAHI hai.
-DELTA_SETUP_ERRORS = {
-    'ip_not_whitelisted_for_api_key': (
-        'ip_not_whitelisted',
-        'Delta API key is server ke IP ({client_ip}) se allowed nahi hai. '
-        'Delta Exchange > API Keys mein ye IP whitelist karein, tabhi live positions aayengi.',
-    ),
-    'invalid_api_key': (
-        'invalid_api_key',
-        'Delta API key invalid hai. Backend mein valid Delta India API key aur secret set karein.',
-    ),
-    'unauthorized_api_access': (
-        'unauthorized',
-        'Is Delta API key ko positions read karne ki permission nahi hai. '
-        'Delta par key ke liye read permission enable karein.',
-    ),
-    'expired_signature': (
-        'expired_signature',
-        'Delta signature expire ho gaya (server clock out of sync lag raha hai). '
-        'System time sync karke dubara try karein.',
-    ),
-    'SignatureMismatch': (
-        'signature_mismatch',
-        'Delta signature match nahi hua — API secret galat lag raha hai. Key/secret dubara check karein.',
-    ),
-    # Delta ke docs mein yahi galti ulte shabd-kram se bhi likhi hai
-    # ("SignatureExpired"), jise normalizing bhi `expired_signature` se match
-    # nahi kara sakti. Isliye dono naam rakhe hue hain.
-    'SignatureExpired': (
-        'expired_signature',
-        'Delta signature expire ho gaya (server clock out of sync lag raha hai). '
-        'System time sync karke dubara try karein.',
-    ),
-}
-
-
-def _delta_code_key(value):
-    """
-    Delta ke error code ko match karne layak banao.
-
-    Delta wahi galti do naamon se bhejta hai — `Signature Mismatch` (space ke
-    saath) aur `signature_mismatch`. Pehle sirf ek spelling map mein thi, to
-    doosri par user ko raw JSON dikh jaata tha. Ab spacing, dash aur case ka
-    farak nahi padta.
-    """
-    return re.sub(r'[^a-z0-9]', '', (value or '').lower())
-
-
-_DELTA_SETUP_ERRORS_BY_KEY = {_delta_code_key(k): (k, v) for k, v in DELTA_SETUP_ERRORS.items()}
-
-
-def classify_delta_error(raw_error):
-    """
-    Delta ke raw error body ko structured reason + readable message mein badalta hai.
-
-    Returns dict: {reason, code, message, client_ip, needs_setup}
-    `needs_setup=True` ka matlab: credentials/config problem hai, transient failure nahi.
-    """
-    raw = (raw_error or '').strip()
-    code = ''
-    client_ip = None
-
-    if raw.startswith('{'):
-        try:
-            parsed = json.loads(raw)
-            err = parsed.get('error')
-            if isinstance(err, dict):
-                code = str(err.get('code') or '')
-                context = err.get('context')
-                if isinstance(context, dict):
-                    client_ip = context.get('client_ip')
-            elif isinstance(err, str):
-                code = err
-        except Exception:
-            pass
-
-    entry = None
-    matched = _DELTA_SETUP_ERRORS_BY_KEY.get(_delta_code_key(code))
-    if matched:
-        code, entry = matched[0], matched[1]
-    else:
-        # Code na mila (ya naya naam) — poore body par normalized substring dekho.
-        raw_key = _delta_code_key(raw)
-        for known_key, (known_code, known_entry) in _DELTA_SETUP_ERRORS_BY_KEY.items():
-            if known_key in raw_key:
-                code, entry = code or known_code, known_entry
-                break
-
-    if entry:
-        reason, template = entry
-        return {
-            'reason': reason,
-            'code': code,
-            'message': template.format(client_ip=client_ip or 'unknown'),
-            'client_ip': client_ip,
-            'needs_setup': True,
-        }
-
-    return {
-        'reason': 'upstream_error',
-        'code': code,
-        'message': (raw[:300] if raw else 'Delta se positions fetch nahi hui'),
-        'client_ip': client_ip,
-        'needs_setup': False,
-    }
-
-
-def delta_underlying_asset(symbol):
-    """'BTCUSDT' / 'BTCUSD' -> 'BTC'. Quote suffix na mile to symbol as-is."""
-    s = (symbol or '').strip().upper()
-    if not s:
-        return None
-    for quote in ('USDT', 'USDC', 'USD', 'INR'):
-        if s.endswith(quote) and len(s) > len(quote):
-            return s[:-len(quote)]
-    return s
-
-
 @app.route('/api/place-order', methods=['POST'])
 @require_auth
 def place_order():
