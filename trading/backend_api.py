@@ -2463,8 +2463,17 @@ def prepare_order(*, account, payload, require_live_toggle=True):
     symbol = str(payload.get('symbol') or '').strip().upper()
     side = str(payload.get('side') or '').strip().lower()
     order_type = str(payload.get('order_type') or 'limit').strip().lower()
-    size = _fnum(payload.get('size'), 0.0)
-    size_unit = str(payload.get('size_unit') or 'contracts').strip().lower()
+    # Do naam chalte hain. `size` naya hai aur default **contracts** hai.
+    # `quantity` purana desk ticket bhejta hai aur wahan wo **coins** mein hai
+    # (ticket par likha hi "Quantity · BTC" hai), isliye uska default unit
+    # base rakha gaya hai. Ye farak maayne rakhta hai: Delta par 0.001 BTC =
+    # 1 contract, to galat unit maan lene par order 1000 guna galat hota.
+    if payload.get('size') not in (None, ''):
+        size = _fnum(payload.get('size'), 0.0)
+        size_unit = str(payload.get('size_unit') or 'contracts').strip().lower()
+    else:
+        size = _fnum(payload.get('quantity'), 0.0)
+        size_unit = str(payload.get('size_unit') or 'base').strip().lower()
     price = _fnum(payload.get('price'), 0.0) or None
     reduce_only = bool(payload.get('reduce_only'))
 
