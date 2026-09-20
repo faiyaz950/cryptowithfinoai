@@ -122,11 +122,48 @@ class ExchangeAdapter:
 
     # Order lagana har adapter mein nahi hai. Jo nahi karta, wo saaf mana
     # karta hai — chup-chaap kuch na karke "ho gaya" kehne se behtar.
-    def place_order(self, **kwargs):
+    def place_order(self, **kwargs) -> Optional[Dict[str, Any]]:
+        """
+        Ek order. `contracts` exchange ki apni unit mein hota hai (Delta par
+        contracts, coins nahi) — coin se contract ka hisaab upar wali layer
+        `contract_info()` se karti hai. Fail par None.
+        """
         return self.fail("order_not_supported")
 
     def cancel_order(self, order_id):
         return self.fail("order_not_supported")
+
+    def mark_price(self, symbol: str) -> Optional[float]:
+        """
+        Abhi ka bhaav — market order ka notional ginne ke liye.
+
+        Na mile to None, aur tab market order rok diya jaata hai: bina bhaav
+        ke ye pata hi nahi chalega ki order kitne ka hai, aur kitne ka hai ye
+        jaane bina limit lagana bemaani hai.
+        """
+        return None
+
+    def contract_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Ek contract kitna bada hai: {contract_value, unit, tick_size}.
+
+        Iske bina "0.001 BTC" ko galti se 0.001 contracts samajh liya jaa
+        sakta hai — Delta par wo 1000 guna chhota order hai. Jo adapter ye
+        nahi de sakta, uske exchange par order lagane nahi diya jaata.
+        """
+        return None
+
+    @staticmethod
+    def order_result(**kw) -> Dict[str, Any]:
+        return {
+            "order_id": str(kw.get("order_id") or ""),
+            "symbol": str(kw.get("symbol") or "").upper(),
+            "side": str(kw.get("side") or "").lower(),
+            "order_type": str(kw.get("order_type") or "").lower(),
+            "size": fnum(kw.get("size")),
+            "price": fnum(kw.get("price")) or None,
+            "state": str(kw.get("state") or "").lower(),
+        }
 
     # ── common madad ───────────────────────────────────────
 

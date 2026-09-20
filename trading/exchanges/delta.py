@@ -61,6 +61,42 @@ def _mark_price(symbol: str) -> Optional[float]:
     return price
 
 
+_PRODUCT_CACHE: Dict[str, tuple] = {}
+_PRODUCT_TTL = 3600.0
+
+
+def _contract_info(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Delta ka product meta — ek ghanta cache.
+
+    Yahan se `contract_value` aata hai: BTCUSD par 0.001, yaani 1 contract =
+    0.001 BTC. Order lagane se pehle coin ko contracts mein badalne ke liye
+    yahi number chahiye.
+    """
+    key = (symbol or "").upper().replace("USDT", "USD")
+    if not key:
+        return None
+    hit = _PRODUCT_CACHE.get(key)
+    now = time.time()
+    if hit and (now - hit[0]) < _PRODUCT_TTL:
+        return hit[1]
+    try:
+        res = requests.get(f"{BASE_URL}/v2/products/{key}", timeout=10)
+        res.raise_for_status()
+        p = (res.json() or {}).get("result") or {}
+        info = {
+            "symbol": key,
+            "contract_value": fnum(p.get("contract_value")),
+            "unit": p.get("contract_unit_currency") or "",
+            "tick_size": fnum(p.get("tick_size")),
+        }
+        info = info if info["contract_value"] else None
+    except Exception:
+        info = None
+    _PRODUCT_CACHE[key] = (now, info)
+    return info
+
+
 class DeltaAdapter(ExchangeAdapter):
     id = "delta"
     name = "Delta Exchange India"
@@ -202,16 +238,37 @@ class DeltaAdapter(ExchangeAdapter):
             return {}
         return data if isinstance(data, dict) else {}
 
-    def place_order(self, **kwargs):
-        result = self.client.place_order(
+    def mark_price(self, symbol: str) -> Optional[float]:
+        info = _contract_info(symbol)
+        return _mark_price(info["symbol"] if info else (symbol or "").upper())
+
+    def contract_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+        return _contract_info(symbol)
+
+    def place_order(self, **kwargs) -> Optional[Dict[str, Any]]:
+        raw = self.client.place_order(
             symbol=kwargs.get("symbol"),
             side=kwargs.get("side"),
             order_type=kwargs.get("order_type"),
-            quantity=kwargs.get("quantity"),
+            quantity=kwargs.get("contracts"),
             price=kwargs.get("price"),
             reduce_only=kwargs.get("reduce_only", False),
+            client_order_id=kwargs.get("client_order_id"),
         )
-        return result if result else self._absorb_error()
+        if not raw:
+            return self._absorb_error()
+        r = raw.get("result") if isinstance(raw, dict) else {}
+        r = r if isinstance(r, dict) else {}
+        self.clear_error()
+        return self.order_result(
+            order_id=r.get("id"),
+            symbol=r.get("product_symbol") or kwargs.get("symbol"),
+            side=r.get("side") or kwargs.get("side"),
+            order_type=r.get("order_type") or kwargs.get("order_type"),
+            size=r.get("size") or kwargs.get("contracts"),
+            price=r.get("limit_price") or kwargs.get("price"),
+            state=r.get("state") or "open",
+        )
 
     def cancel_order(self, order_id):
         result = self.client.cancel_order(order_id)

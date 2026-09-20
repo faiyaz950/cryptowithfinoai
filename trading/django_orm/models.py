@@ -58,6 +58,9 @@ class UserAccount(models.Model):
     email = models.CharField(max_length=180, blank=True, default="")
     email_verified = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    # TradingView alert isi token wale URL par aata hai — token hi uski
+    # pehchan hai, isliye ise password jaisa hi samjha jaata hai.
+    tv_token = models.CharField(max_length=64, blank=True, default="", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -91,6 +94,13 @@ class ExchangeAccount(models.Model):
     can_trade = models.BooleanField(default=False)
     can_withdraw = models.BooleanField(default=False)
     permissions_verified = models.BooleanField(default=False)
+    # Live trading har account par band paida hota hai. Key jud jaane ka
+    # matlab ye nahi ki desk uske paise se order laga sakta hai — wo alag,
+    # soch-samajh kar diya gaya permission hai.
+    live_trading_enabled = models.BooleanField(default=False)
+    # Ek order ki upper limit (quote currency mein). Khaali = sirf server ki
+    # apni default limit lagti hai.
+    max_order_notional = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     last_error = models.TextField(blank=True, default="")
     last_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -117,6 +127,9 @@ class ByokOrder(models.Model):
     quantity = models.DecimalField(max_digits=28, decimal_places=8)
     price = models.DecimalField(max_digits=28, decimal_places=8, null=True, blank=True)
     status = models.CharField(max_length=32)
+    # Order kahan se aaya: desk, tradingview, ya api. Baad mein "ye trade
+    # kisne lagaya" ka jawab isi se milta hai.
+    source = models.CharField(max_length=24, default="manual", db_index=True)
     exchange_response = models.TextField(blank=True, default="")
     created_at = models.DateTimeField()
 

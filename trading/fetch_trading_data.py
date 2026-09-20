@@ -580,21 +580,37 @@ class DeltaExchangeClient:
             return result if isinstance(result, list) else []
         return data if isinstance(data, list) else []
 
-    def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False):
-        """Order place karta hai"""
-        endpoint = "/v2/orders"
+    def place_order(self, symbol, side, order_type, quantity, price=None, reduce_only=False,
+                    client_order_id=None, time_in_force="gtc"):
+        """
+        Delta v2 `POST /v2/orders` — documented body ke saath.
+
+        Do cheezein pehle galat thi aur dono asli paison wali thi:
+        `product_id` mein symbol string chala jaata tha (Delta wahan integer
+        id maangta hai; docs `product_symbol` bhi lete hain, wahi ab jaata
+        hai), aur `order_type` "limit"/"market" bhej diya jaata tha jabki
+        Delta "limit_order"/"market_order" samajhta hai.
+
+        `quantity` **contracts** hai, coins nahi — BTCUSD par 1 contract
+        = 0.001 BTC. Coin se contract ka hisaab upar wali layer karti hai.
+        """
+        kind = "limit_order" if str(order_type or "").startswith("limit") else "market_order"
         body = {
-            'product_id': symbol,
-            'side': side,  # 'buy' or 'sell'
-            'order_type': order_type,  # 'limit', 'market', etc.
-            'size': quantity,
-            'reduce_only': reduce_only
+            'product_symbol': self._delta_symbol(symbol),
+            'size': int(quantity),
+            'side': side,
+            'order_type': kind,
+            'reduce_only': bool(reduce_only),
         }
-        
-        if price and order_type == 'limit':
-            body['limit_price'] = price
-        
-        return self._make_request('POST', endpoint, body=body)
+        if kind == "limit_order":
+            body['limit_price'] = str(price)
+            body['time_in_force'] = time_in_force
+        if client_order_id:
+            # Wahi id dobara bhejne par Delta naya order nahi banata — network
+            # retry par do orders lag jaane se yahi bachata hai.
+            body['client_order_id'] = str(client_order_id)[:64]
+
+        return self._make_request('POST', "/v2/orders", body=body)
     
     def get_orders(self, symbol=None):
         """Open orders fetch karta hai"""

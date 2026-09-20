@@ -313,6 +313,24 @@ def update_user_account_fields(user_id: int, **kwargs: Any) -> None:
     u.save()
 
 
+def get_user_account_by_tv_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Webhook token se user.
+
+    Token hi is request ki poori pehchan hai (TradingView session nahi bhej
+    sakta), isliye khaali token kabhi match nahi hona chahiye — warna jis
+    user ne token banaya hi nahi, uske account par koi bhi order laga deta.
+    """
+    token = (token or "").strip()
+    if len(token) < 20:
+        return None
+    _ensure_django()
+    from django_orm.models import UserAccount
+
+    u = UserAccount.objects.filter(tv_token=token, is_active=True).first()
+    return _user_dict(u) if u else None
+
+
 def create_user_session(
     *,
     user_id: int,
@@ -379,6 +397,8 @@ def _exchange_summary(a) -> Dict[str, Any]:
         "can_trade": bool(a.can_trade),
         "can_withdraw": bool(a.can_withdraw),
         "permissions_verified": bool(a.permissions_verified),
+        "live_trading_enabled": bool(a.live_trading_enabled),
+        "max_order_notional": float(a.max_order_notional) if a.max_order_notional is not None else None,
         "last_error": a.last_error or "",
         "last_verified_at": a.last_verified_at.isoformat() if a.last_verified_at else None,
         "created_at": a.created_at.isoformat() if a.created_at else None,
@@ -540,6 +560,7 @@ def save_byok_order_entry(order_record: Dict[str, Any]) -> None:
     price = order_record.get("price")
     ByokOrder.objects.create(
         user_id=int(order_record["user_id"]),
+        source=str(order_record.get("source") or "manual")[:24],
         exchange_account_id=int(order_record["exchange_account_id"]),
         order_id=str(order_record.get("order_id", "")),
         symbol=str(order_record.get("symbol", "")),
@@ -576,6 +597,7 @@ def fetch_byok_orders(
                 "quantity": float(r.quantity),
                 "price": float(r.price) if r.price is not None else None,
                 "status": r.status,
+                "source": r.source,
                 "timestamp": r.created_at.isoformat(),
                 "exchange_account_id": r.exchange_account_id,
             }

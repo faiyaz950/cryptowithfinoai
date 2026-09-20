@@ -36,6 +36,7 @@ from django_orm import (
     get_user_account_by_username,
     get_user_account_by_email,
     get_user_account_by_id,
+    get_user_account_by_tv_token,
     update_user_account_fields,
     create_user_session,
     get_active_session_by_token,
@@ -104,7 +105,6 @@ _db_thread.join()
 
 
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))
-MAX_ORDER_QTY = float(os.getenv("BYOK_MAX_ORDER_QTY", "1000"))
 EMAIL_OTP_TTL_MINUTES = int(os.getenv("EMAIL_OTP_TTL_MINUTES", "10"))
 EMAIL_OTP_DEBUG = os.getenv("EMAIL_OTP_DEBUG", "true").lower() == "true"
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
@@ -2412,100 +2412,482 @@ def byok_exchange_balances(account_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# Ek order ki upper limit (quote currency mein), jab user ne apni limit na
+# rakhi ho. Ye jaanbujh kar chhoti hai: live trading mein galti ki keemat
+# asli paisa hai, aur badhana user ke haath mein hai.
+DEFAULT_MAX_ORDER_NOTIONAL = _fnum(os.getenv("LIVE_ORDER_MAX_NOTIONAL"), 500.0)
+# Isse upar koi account nahi ja sakta, chahe user ne kitni bhi limit rakhi ho.
+HARD_MAX_ORDER_NOTIONAL = _fnum(os.getenv("LIVE_ORDER_HARD_MAX_NOTIONAL"), 25000.0)
+
+
+class OrderRejected(Exception):
+    """Order exchange tak gaya hi nahi — reason user ko dikhane layak hai."""
+
+    def __init__(self, message, status=400, reason=None):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.reason = reason
+
+
+# Asli order tabhi exchange tak jaata hai jab ye env flag on ho. Abhi band
+# hai: poora rasta (desk, webhook, saare guards) paper mode mein chalta aur
+# test hota hai, aur execution ek alag, soch-samajh kar khola jaane wala
+# switch hai. Iske bina mode="live" maanga bhi jaye to paper hi chalega.
+LIVE_ORDERS_ENABLED = (os.getenv("LIVE_ORDERS_ENABLED", "").strip().lower() in ("1", "true", "yes"))
+
+
+def prepare_order(*, account, payload, require_live_toggle=True):
+    """
+    Order ko jaanchta hai aur "kya bhejna hai" ka poora hisaab banata hai —
+    par bhejta kuch nahi.
+
+    Desk aur webhook dono isi se hokar jaate hain, taaki koi bhi guard sirf
+    ek jagah lagana pade. Jaanch exchange par nahi chhodi jaati: hum khud
+    rok dete hain, taaki galti exchange tak pahunche hi na.
+    """
+    if not account.get('is_active'):
+        raise OrderRejected('Ye exchange account band hai.')
+    if require_live_toggle and not account.get('live_trading_enabled'):
+        raise OrderRejected(
+            'Is account par live trading band hai. Exchanges page par ise chaalu karein.',
+            reason='live_trading_disabled',
+        )
+    if not account.get('can_trade'):
+        raise OrderRejected('Is key ko trading permission nahi hai.', reason='unauthorized')
+    if account.get('can_withdraw'):
+        # Aisi key se order lagana matlab ek hi key se paisa nikaalna bhi
+        # mumkin hai — wo risk hum lete hi nahi.
+        raise OrderRejected('Withdrawal-enabled key se order nahi lagta. Nayi key banayein.')
+
+    symbol = str(payload.get('symbol') or '').strip().upper()
+    side = str(payload.get('side') or '').strip().lower()
+    order_type = str(payload.get('order_type') or 'limit').strip().lower()
+    size = _fnum(payload.get('size'), 0.0)
+    size_unit = str(payload.get('size_unit') or 'contracts').strip().lower()
+    price = _fnum(payload.get('price'), 0.0) or None
+    reduce_only = bool(payload.get('reduce_only'))
+
+    if not symbol:
+        raise OrderRejected('symbol chahiye.')
+    if side not in ('buy', 'sell'):
+        raise OrderRejected("side 'buy' ya 'sell' hona chahiye.")
+    if order_type not in ('limit', 'market'):
+        raise OrderRejected("order_type 'limit' ya 'market' hona chahiye.")
+    if size <= 0:
+        raise OrderRejected('size 0 se bada hona chahiye.')
+    if order_type == 'limit' and not price:
+        raise OrderRejected('Limit order ke liye price chahiye.')
+
+    adapter = get_adapter(account['exchange'], decrypt_secret(account['api_key_encrypted']),
+                          decrypt_secret(account['secret_key_encrypted']))
+    if adapter is None:
+        raise OrderRejected(message_for('adapter_missing', exchange=exchange_name(account['exchange'])))
+
+    info = adapter.contract_info(symbol)
+    if not info:
+        raise OrderRejected(
+            f'{adapter.name} par {symbol} ke liye contract size nahi mila — order nahi bhej sakte.',
+            reason='contract_unknown',
+        )
+
+    # Coins ko contracts mein badlo. BTCUSD par 1 contract = 0.001 BTC, to
+    # "0.01 BTC" = 10 contracts. Aadha contract nahi hota, isliye adhoora
+    # number chup-chaap round karne ke bajaye mana kar dete hain — round
+    # karne par user ko jo mila wo uske maange se alag hota.
+    contract_value = _fnum(info.get('contract_value'), 0.0)
+    if size_unit in ('base', 'coin', 'coins'):
+        if not contract_value:
+            raise OrderRejected('Contract size nahi mila, coins ko contracts mein nahi badal sakte.')
+        exact = size / contract_value
+        contracts = round(exact)
+        if abs(exact - contracts) > 1e-9:
+            step = contract_value
+            raise OrderRejected(
+                f'{symbol} par quantity {step} {info.get("unit") or ""} ke multiple mein honi chahiye '
+                f'(1 contract = {step}).',
+                reason='size_step',
+            )
+    else:
+        contracts = round(size)
+        if abs(size - contracts) > 1e-9:
+            raise OrderRejected('Contracts poore number mein hone chahiye.', reason='size_step')
+    if contracts < 1:
+        raise OrderRejected('Itni chhoti quantity par ek bhi contract nahi banta.', reason='size_step')
+
+    # Notional kis bhaav par — limit ka apna price, market ka abhi ka mark.
+    reference = price if order_type == 'limit' else adapter.mark_price(symbol)
+    if not reference:
+        raise OrderRejected(
+            f'{symbol} ka abhi ka bhaav nahi mila, isliye order ka size check nahi kar sakte.',
+            reason='no_price',
+        )
+    notional = contracts * contract_value * reference
+
+    account_cap = _fnum(account.get('max_order_notional'), 0.0) or DEFAULT_MAX_ORDER_NOTIONAL
+    cap = min(account_cap, HARD_MAX_ORDER_NOTIONAL)
+    if notional > cap:
+        raise OrderRejected(
+            f'Ye order lagbhag {notional:,.2f} ka hai, aur is account ki limit {cap:,.2f} hai. '
+            f'Limit Exchanges page par badal sakte hain.',
+            reason='notional_cap',
+        )
+
+    # Yahan tak aane ka matlab: order har jaanch paar kar chuka hai. Kya
+    # bhejna hai wo poora tay hai — bhejna hai ya nahi, wo caller tay karta hai.
+    return {
+        'adapter': adapter,
+        'symbol': symbol,
+        'side': side,
+        'order_type': order_type,
+        'contracts': contracts,
+        'price': price,
+        'reduce_only': reduce_only,
+        'client_order_id': payload.get('client_order_id'),
+        'base_quantity': round(contracts * contract_value, 10),
+        'base_unit': info.get('unit') or '',
+        'reference_price': reference,
+        'notional': round(notional, 2),
+        'cap': cap,
+    }
+
+
+def submit_order(*, user, account, payload, source, mode='paper'):
+    """
+    Jaanche hue order ko aage badhata hai.
+
+    `mode="paper"` par exchange ko chhua tak nahi jaata — sirf record banta
+    hai. Poora rasta (desk, webhook, saare guards, contract ka hisaab) isi
+    mode mein chalta aur test hota hai.
+
+    `mode="live"` tabhi sach mein live hai jab `LIVE_ORDERS_ENABLED` bhi on
+    ho. Ye switch jaanbujh kar env mein hai, code mein nahi: asli paise wala
+    execution ek alag, soch-samajh kar liya gaya faisla hona chahiye — koi
+    aisi cheez nahi jo galti se on ho jaye.
+    """
+    live = mode == 'live' and LIVE_ORDERS_ENABLED
+    plan = prepare_order(account=account, payload=payload, require_live_toggle=live)
+    adapter = plan.pop('adapter')
+
+    if live:
+        result = adapter.place_order(
+            symbol=plan['symbol'],
+            side=plan['side'],
+            order_type=plan['order_type'],
+            contracts=plan['contracts'],
+            price=plan['price'],
+            reduce_only=plan['reduce_only'],
+            client_order_id=plan['client_order_id'],
+        )
+        if result is None:
+            err = adapter.error_message()
+            update_exchange_account_status(account['id'], user['id'], last_error=err[:400])
+            raise OrderRejected(err, reason=adapter.last_reason)
+        order_id, status = result.get('order_id') or '', result.get('state') or 'open'
+    else:
+        result = {}
+        order_id = f"paper_{int(time.time() * 1000)}"
+        status = 'paper'
+
+    record = {
+        'user_id': user['id'],
+        'exchange_account_id': account['id'],
+        'order_id': order_id,
+        'symbol': plan['symbol'],
+        'side': plan['side'],
+        'order_type': plan['order_type'],
+        'quantity': plan['contracts'],
+        'price': plan['price'],
+        'status': status,
+        'source': source,
+        'timestamp': datetime.now(timezone.utc),
+        'exchange_response': json.dumps(result)[:5000],
+    }
+    try:
+        save_byok_order_entry(record)
+    except Exception as exc:
+        # Live mode mein order exchange par lag chuka hota hai — record fail
+        # hone par use "fail" nahi keh sakte, warna user dobara laga dega.
+        print(f"⚠️ Order submitted but not recorded: {exc}")
+
+    if live:
+        _invalidate_private_cache(account['id'])
+    return {
+        **plan,
+        'order_id': order_id,
+        'status': status,
+        'mode': 'live' if live else 'paper',
+        'source': source,
+    }
+
+
+# TradingView webhook par kitni requests — ek token, ek minute.
+# Alert loop mein fans jaye to ye use exchange tak pahunchne se pehle rok
+# deta hai; bina iske ek galat strategy sau orders bhej sakti hai.
+TV_RATE_LIMIT = int(_fnum(os.getenv("TV_WEBHOOK_PER_MINUTE"), 20))
+_tv_hits = {}
+_tv_hits_lock = threading.Lock()
+
+
+def _tv_rate_ok(token_key):
+    now = time.time()
+    with _tv_hits_lock:
+        hits = [t for t in _tv_hits.get(token_key, []) if now - t < 60]
+        if len(hits) >= TV_RATE_LIMIT:
+            _tv_hits[token_key] = hits
+            return False
+        hits.append(now)
+        _tv_hits[token_key] = hits
+        return True
+
+
+def _tv_webhook_url(token):
+    base = (os.getenv("PUBLIC_API_URL") or request.host_url.rstrip('/') + '/api').rstrip('/')
+    return f"{base}/webhooks/tv/{token}"
+
+
+def _ensure_tv_token(user):
+    """Token pehli baar maangne par hi banta hai, aur DB mein rehta hai."""
+    token = (user.get('tv_token') or '').strip()
+    if len(token) >= 32:
+        return token
+    token = secrets.token_urlsafe(32)
+    update_user_account_fields(user['id'], tv_token=token)
+    return token
+
+
+TV_SAMPLE_MESSAGE = {
+    "symbol": "BTCUSD",
+    "side": "buy",
+    "order_type": "limit",
+    "size": 1,
+    "size_unit": "contracts",
+    "price": "{{close}}",
+}
+
+
+@app.route('/api/automation/tradingview', methods=['GET'])
+@require_auth
+def automation_tradingview():
+    """
+    TradingView automation ka setup — URL, token aur alert ka message.
+
+    TradingView session nahi bhej sakta, isliye URL ka token hi is request
+    ki poori pehchan hai. Usi wajah se ise password jaisa samjhein: jise
+    URL mil gaya, wo aapke naam se signal bhej sakta hai.
+    """
+    try:
+        token = _ensure_tv_token(g.user)
+        return jsonify({
+            'success': True,
+            'data': {
+                'webhook_url': _tv_webhook_url(token),
+                'token': token,
+                'message_template': json.dumps(TV_SAMPLE_MESSAGE, indent=2),
+                'mode': 'live' if LIVE_ORDERS_ENABLED else 'paper',
+                'rate_limit_per_minute': TV_RATE_LIMIT,
+            },
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/automation/tradingview/regenerate', methods=['POST'])
+@require_auth
+def automation_tradingview_regenerate():
+    """Purana URL turant bekaar ho jaata hai — leak hone par yahi bachav hai."""
+    try:
+        token = secrets.token_urlsafe(32)
+        update_user_account_fields(g.user['id'], tv_token=token)
+        return jsonify({'success': True, 'data': {'webhook_url': _tv_webhook_url(token), 'token': token}})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/webhooks/tv/<token>', methods=['POST'])
+def tradingview_webhook(token):
+    """
+    TradingView alert yahan girta hai.
+
+    Yahan session nahi hota — URL ka token hi user batata hai. Uske baad
+    order bilkul wahi rasta lete hain jo desk ka button leta hai, isliye
+    saare guards (limit, contract ka hisaab, key ki permissions) yahan bhi
+    apne aap lagte hain.
+
+    Jawab hamesha 200-ish rakha jaata hai jahan tak ho sake, kyunki
+    TradingView error par alert band kar deta hai; galti ka detail body
+    mein jaata hai aur order history mein dikhta hai.
+    """
+    try:
+        user = get_user_account_by_tv_token(token)
+        if not user:
+            return jsonify({'success': False, 'error': 'Unknown webhook token'}), 404
+        if not _tv_rate_ok(token[:12]):
+            return jsonify({'success': False, 'error': 'Bahut zyada signals — ek minute mein '
+                                                       f'{TV_RATE_LIMIT} se zyada nahi.'}), 429
+
+        payload = request.get_json(silent=True)
+        if payload is None:
+            # TradingView plain text bhi bhej sakta hai; JSON hi support hai,
+            # aur galti saaf batana behtar hai.
+            raw = (request.get_data(as_text=True) or '')[:200]
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                return jsonify({
+                    'success': False,
+                    'error': 'Alert message JSON hona chahiye. Settings mein diya template use karein.',
+                    'got': raw,
+                }), 400
+
+        raw_id = payload.get('exchange_account_id')
+        account = (
+            get_exchange_account_for_user(int(raw_id), user['id']) if raw_id
+            else _primary_exchange_account(user['id'])
+        )
+        if not account:
+            return jsonify({'success': False, 'error': 'Is account se koi exchange juda nahi hai.'}), 400
+
+        mode = 'live' if str(payload.get('mode') or 'live').lower() == 'live' else 'paper'
+        result = submit_order(user=user, account=account, payload=payload, source='tradingview', mode=mode)
+        return jsonify({'success': True, 'data': result}), 200
+    except OrderRejected as rej:
+        return jsonify({'success': False, 'error': rej.message, 'reason': rej.reason}), 400
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'exchange_account_id galat hai'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/byok/orders', methods=['POST'])
 @require_auth
 def byok_place_order():
-    """Place an order using the authenticated user's linked exchange keys."""
+    """
+    Desk se order — abhi paper mode mein.
+
+    Jaanch bilkul wahi hoti hai jo live order par hogi (contract ka hisaab,
+    order value ki limit, key ki permissions), sirf exchange ko call nahi
+    jaati. Isse poora rasta aaj test ho jaata hai, aur live karne ke liye
+    sirf ek switch khulna baaki rehta hai.
+    """
     try:
         payload = request.get_json(silent=True) or {}
-        exchange_account_id = payload.get('exchange_account_id')
-        symbol = (payload.get('symbol') or '').strip()
-        side = (payload.get('side') or 'buy').strip().lower()
-        order_type = (payload.get('order_type') or 'market').strip().lower()
-        quantity = float(payload.get('quantity', 0) or 0)
-        price = payload.get('price')
-        reduce_only = bool(payload.get('reduce_only', False))
+        raw_id = payload.get('exchange_account_id')
+        account = (
+            get_exchange_account_for_user(int(raw_id), g.user['id']) if raw_id
+            else _primary_exchange_account(g.user['id'])
+        )
+        if not account:
+            return jsonify({
+                'success': False,
+                'error': 'Koi exchange juda nahi hai. Pehle Exchanges page se key jodein.',
+                'reason': 'not_connected',
+            }), 404
 
-        if not exchange_account_id:
-            return jsonify({'success': False, 'error': 'exchange_account_id is required'}), 400
-        if not symbol or side not in {'buy', 'sell'} or order_type not in {'market', 'limit'}:
-            return jsonify({'success': False, 'error': 'Invalid symbol/side/order_type'}), 400
-        if quantity <= 0 or quantity > MAX_ORDER_QTY:
-            return jsonify({'success': False, 'error': f'quantity must be in range (0, {MAX_ORDER_QTY}]'}), 400
-        if order_type == 'limit':
-            if price is None:
-                return jsonify({'success': False, 'error': 'price is required for limit orders'}), 400
-            price = float(price)
-            if price <= 0:
-                return jsonify({'success': False, 'error': 'price must be > 0'}), 400
-        else:
-            price = None
+        mode = 'live' if str(payload.get('mode') or '').lower() == 'live' else 'paper'
+        result = submit_order(user=g.user, account=account, payload=payload, source='desk', mode=mode)
+        message = (
+            'Order exchange par bhej diya gaya'
+            if result['mode'] == 'live'
+            else 'Paper order record ho gaya (exchange par nahi bheja gaya)'
+        )
+        return jsonify({'success': True, 'message': message, 'data': result}), 201
+    except OrderRejected as rej:
+        return jsonify({'success': False, 'error': rej.message, 'reason': rej.reason}), rej.status
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'exchange_account_id galat hai'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-        account = get_exchange_account_for_user(exchange_account_id, g.user['id'])
+
+@app.route('/api/byok/orders/preview', methods=['POST'])
+@require_auth
+def byok_preview_order():
+    """
+    Bhejne se pehle: ye order asli mein kya hai.
+
+    UI isse confirm screen bharta hai — kitne contracts, kitne coins, aur
+    lagbhag kitne ka. Order value chhupi na rahe, isliye yahi hisaab jo
+    submit ke waqt lagta hai.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw_id = payload.get('exchange_account_id')
+        account = (
+            get_exchange_account_for_user(int(raw_id), g.user['id']) if raw_id
+            else _primary_exchange_account(g.user['id'])
+        )
+        if not account:
+            return jsonify({'success': False, 'error': 'Koi exchange juda nahi hai.', 'reason': 'not_connected'}), 404
+
+        plan = prepare_order(account=account, payload=payload, require_live_toggle=False)
+        plan.pop('adapter', None)
+        plan['live_orders_enabled'] = LIVE_ORDERS_ENABLED and bool(account.get('live_trading_enabled'))
+        return jsonify({'success': True, 'data': plan})
+    except OrderRejected as rej:
+        return jsonify({'success': False, 'error': rej.message, 'reason': rej.reason}), rej.status
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'exchange_account_id galat hai'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/byok/exchange-accounts/<int:account_id>/trading', methods=['PATCH'])
+@require_auth
+def byok_update_trading_settings(account_id):
+    """
+    Live trading on/off aur per-order limit.
+
+    Alag endpoint isliye ki "key jod di" aur "is key se asli order laga
+    sakte ho" do alag faisle hain — dusra user ko jaan-boojh kar dena padta
+    hai, aur uske baad bhi server ka apna switch (LIVE_ORDERS_ENABLED) khula
+    hona chahiye.
+    """
+    try:
+        account = get_exchange_account_for_user(account_id, g.user['id'])
         if not account:
             return jsonify({'success': False, 'error': 'Exchange account not found'}), 404
-        if not account.get('is_active', False):
-            return jsonify({'success': False, 'error': 'Exchange account is inactive'}), 400
-        if not account.get('can_trade', False):
-            return jsonify({'success': False, 'error': 'Trading permission unavailable'}), 400
-        if account.get('can_withdraw', False):
-            return jsonify({'success': False, 'error': 'Withdrawal-enabled keys are not allowed'}), 400
 
-        api_key = decrypt_secret(account['api_key_encrypted'])
-        secret_key = decrypt_secret(account['secret_key_encrypted'])
-        exchange_client = get_adapter(account['exchange'], api_key, secret_key)
-        if exchange_client is None:
-            return jsonify({'success': False, 'error': 'Exchange adapter not available'}), 400
+        payload = request.get_json(silent=True) or {}
+        fields = {}
+        if 'live_trading_enabled' in payload:
+            enable = bool(payload['live_trading_enabled'])
+            if enable and not account.get('permissions_verified'):
+                return jsonify({
+                    'success': False,
+                    'error': 'Pehle key verify hone dein, phir live trading chaalu karein.',
+                }), 400
+            if enable and account.get('can_withdraw'):
+                return jsonify({
+                    'success': False,
+                    'error': 'Withdrawal-enabled key par live trading chaalu nahi hoti.',
+                }), 400
+            fields['live_trading_enabled'] = enable
+        if 'max_order_notional' in payload:
+            raw = payload['max_order_notional']
+            if raw in (None, ''):
+                fields['max_order_notional'] = None
+            else:
+                value = _fnum(raw, 0.0)
+                if value <= 0:
+                    return jsonify({'success': False, 'error': 'Limit 0 se badi honi chahiye.'}), 400
+                fields['max_order_notional'] = min(value, HARD_MAX_ORDER_NOTIONAL)
+        if not fields:
+            return jsonify({'success': False, 'error': 'Badalne ke liye kuch nahi bheja gaya.'}), 400
 
-        result = exchange_client.place_order(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=price,
-            reduce_only=reduce_only,
-        )
-        if not result:
-            err = (exchange_client.error_message() or 'Order placement failed').strip()
-            update_exchange_account_status(
-                exchange_account_id,
-                g.user['id'],
-                last_error=err[:400],
-            )
-            return jsonify({'success': False, 'error': err[:400]}), 400
-
-        result_payload = result.get('result') if isinstance(result, dict) else None
-        exchange_order_id = (
-            (result_payload or {}).get('id')
-            or (result_payload or {}).get('order_id')
-            or f"byok_{int(time.time() * 1000)}"
-        )
-
-        order_record = {
-            'user_id': g.user['id'],
-            'exchange_account_id': int(exchange_account_id),
-            'order_id': str(exchange_order_id),
-            'symbol': symbol,
-            'side': side,
-            'order_type': order_type,
-            'quantity': quantity,
-            'price': price,
-            'status': 'submitted',
-            'exchange_response': json.dumps(result)[:5000],
-            'timestamp': datetime.now().isoformat(),
-        }
-        save_byok_order_entry(order_record)
-
+        update_exchange_account_status(account_id, g.user['id'], **fields)
+        updated = get_exchange_account_for_user(account_id, g.user['id']) or {}
         return jsonify({
             'success': True,
-            'message': 'BYOK order placed',
             'data': {
-                'order_id': order_record['order_id'],
-                'exchange_account_id': exchange_account_id,
-                'status': 'submitted',
-                'exchange': account['exchange'],
-                'raw': result,
-            }
+                'live_trading_enabled': bool(updated.get('live_trading_enabled')),
+                'max_order_notional': updated.get('max_order_notional'),
+                'default_max_order_notional': DEFAULT_MAX_ORDER_NOTIONAL,
+                'hard_max_order_notional': HARD_MAX_ORDER_NOTIONAL,
+                # Server ka apna switch — user ke toggle se alag. Dono on hon
+                # tabhi order exchange tak jaata hai.
+                'server_live_orders_enabled': LIVE_ORDERS_ENABLED,
+            },
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
