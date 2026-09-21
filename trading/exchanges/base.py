@@ -133,6 +133,17 @@ class ExchangeAdapter:
     def cancel_order(self, order_id):
         return self.fail("order_not_supported")
 
+    def pnl_history(self, start_ms: int, end_ms: int) -> Optional[List[Dict[str, Any]]]:
+        """
+        Beete dinon ka realized P&L: [{date, amount, asset}].
+
+        Isme sirf trading se aaya paisa ginna hai — deposit aur withdrawal
+        nahi. Paisa daalna munafa nahi hota, aur unhe jod dene par chart
+        jhoot bolne lagta hai. Jo adapter ye nahi de sakta wo None lautaye,
+        taaki UI "P&L 0 hai" ke bajaye "is exchange ke liye abhi nahi" kahe.
+        """
+        return None
+
     def mark_price(self, symbol: str) -> Optional[float]:
         """
         Abhi ka bhaav — market order ka notional ginne ke liye.

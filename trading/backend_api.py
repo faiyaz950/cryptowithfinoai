@@ -1609,6 +1609,7 @@ def auth_register():
                 'full_name': created_user.get('full_name', ''),
                 'email': created_user.get('email', ''),
                 'email_verified': created_user.get('email_verified', False),
+                'created_at': created_user.get('created_at'),
             }
         }), 201
     except Exception as e:
@@ -1659,6 +1660,8 @@ def auth_login():
                 'full_name': user.get('full_name', ''),
                 'email': user.get('email', ''),
                 'email_verified': user.get('email_verified', False),
+                # Login ke turant baad bhi profile "member since" dikha sake.
+                'created_at': user.get('created_at'),
             }
         })
     except Exception as e:
@@ -2102,6 +2105,125 @@ def byok_exchanges():
     dikha deta jise backend accept hi nahi karta.
     """
     return jsonify({'success': True, 'data': catalogue()})
+
+
+PNL_MAX_DAYS = 400
+
+
+@app.route('/api/byok/pnl', methods=['GET'])
+@require_auth
+def byok_pnl():
+    """
+    Din-ba-din aur mahine-ba-mahine realized P&L, har jude exchange ka alag
+    aur sabka milakar.
+
+    Data exchange se aata hai, apne records se nahi — apne paas sirf wahi
+    orders hain jo is desk se lage, aur user ne exchange par seedha bhi
+    trade kiya ho sakta hai. Sach wahi hai jo exchange ke wallet mein likha
+    hai.
+
+    Jo exchange ye nahi de sakta uske liye `supported: false` jaata hai —
+    "0 ka munafa" aur "pata nahi" ek baat nahi hai.
+    """
+    try:
+        days = int(_fnum(request.args.get('days'), 30))
+        days = max(1, min(days, PNL_MAX_DAYS))
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        start_ms, end_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+        accounts = [a for a in list_exchange_accounts_for_user(g.user['id']) if a.get('is_active')]
+        by_day, by_exchange = {}, []
+
+        for row in accounts:
+            account = get_exchange_account_for_user(row['id'], g.user['id'])
+            if not account:
+                continue
+            adapter = get_adapter(
+                account['exchange'],
+                decrypt_secret(account['api_key_encrypted']),
+                decrypt_secret(account['secret_key_encrypted']),
+            )
+            entry = {
+                'account_id': account['id'],
+                'exchange': account['exchange'],
+                'label': account.get('label') or '',
+                'name': exchange_name(account['exchange']),
+                'pnl': 0.0,
+                'supported': True,
+                'error': '',
+            }
+            if adapter is None:
+                entry.update(supported=False, error=message_for('adapter_missing', exchange=entry['name']))
+                by_exchange.append(entry)
+                continue
+
+            rows = _cached_private(
+                account['id'], f'pnl_{days}',
+                lambda a=adapter: (a.pnl_history(start_ms, end_ms), a.error_message() if a.last_reason else ''),
+            )
+            history, err = rows if isinstance(rows, tuple) else (rows, '')
+            if history is None:
+                # None ke do matlab hain aur dono alag dikhane chahiye:
+                # adapter ye de hi nahi sakta (supported=False), ya call fail
+                # hui (error). Dono mein number nahi dikhana — "0 ka munafa"
+                # aur "pata nahi chala" ek baat nahi hai.
+                entry.update(supported=bool(err), error=err, pnl=None)
+                by_exchange.append(entry)
+                continue
+
+            total = 0.0
+            for item in history:
+                amount = _fnum(item.get('amount'))
+                day = item.get('date') or ''
+                if not day:
+                    continue
+                by_day[day] = by_day.get(day, 0.0) + amount
+                total += amount
+            entry['pnl'] = round(total, 2)
+            by_exchange.append(entry)
+
+        # Khaali din bhi chart mein aane chahiye, warna bar chart jhooti
+        # tasveer banata hai (do din ki doori ek jaisi nahi dikhti).
+        series = []
+        cursor = start.date()
+        last = end.date()
+        while cursor <= last:
+            key = cursor.isoformat()
+            series.append({'date': key, 'pnl': round(by_day.get(key, 0.0), 2)})
+            cursor += timedelta(days=1)
+
+        months = {}
+        for item in series:
+            months.setdefault(item['date'][:7], 0.0)
+            months[item['date'][:7]] += item['pnl']
+
+        traded = [d for d in series if d['pnl']]
+        wins = [d for d in traded if d['pnl'] > 0]
+        best = max(traded, key=lambda d: d['pnl'], default=None)
+        worst = min(traded, key=lambda d: d['pnl'], default=None)
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'days': days,
+                'by_day': series,
+                'by_month': [{'month': m, 'pnl': round(v, 2)} for m, v in sorted(months.items())],
+                'by_exchange': by_exchange,
+                'totals': {
+                    'realized': round(sum(d['pnl'] for d in series), 2),
+                    'traded_days': len(traded),
+                    'win_days': len(wins),
+                    'loss_days': len(traded) - len(wins),
+                    'best_day': best,
+                    'worst_day': worst,
+                },
+                'note': 'Realized P&L — fees aur funding jodkar. Deposit/withdrawal shaamil nahi.',
+                'fetched_at': datetime.now(timezone.utc).isoformat(),
+            },
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/byok/egress-ips', methods=['GET'])

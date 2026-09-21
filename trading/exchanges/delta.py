@@ -61,6 +61,18 @@ def _mark_price(symbol: str) -> Optional[float]:
     return price
 
 
+# Sirf ye transaction types trading ka nateeja hain. Deposit, withdrawal,
+# sub-account transfer aur conversion jaanbujh kar bahar hain — wo paisa
+# aane-jaane ki entry hai, munafe ki nahi.
+TRADING_TYPES = {
+    "cashflow",          # realized PnL
+    "commission",        # trading fees (minus mein aata hai)
+    "commission_rebate",
+    "funding",           # perpetual funding
+    "settlement",
+    "liquidation_fee",
+}
+
 _PRODUCT_CACHE: Dict[str, tuple] = {}
 _PRODUCT_TTL = 3600.0
 
@@ -237,6 +249,58 @@ class DeltaAdapter(ExchangeAdapter):
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def pnl_history(self, start_ms: int, end_ms: int) -> Optional[List[Dict[str, Any]]]:
+        """
+        `/v2/wallet/transactions` se realized P&L, din ke hisaab se.
+
+        Delta har paise ki harkat ek transaction banata hai. Inme se sirf
+        trading wali ginni jaati hain (TRADING_TYPES) — deposit, withdrawal
+        aur transfer jaanbujh kar chhode gaye hain, kyunki wo munafa nahi,
+        sirf paisa idhar-udhar hona hai. Unhe jodne par ek deposit poore
+        mahine ko "profit" dikha deta.
+
+        Time micro-seconds mein jaata hai (docs), milliseconds mein nahi.
+        """
+        rows, cursor, pages = [], None, 0
+        while pages < 20:  # 20 x 200 = 4000 entries; itna kaafi hai
+            params = {
+                "start_time": int(start_ms * 1000),
+                "end_time": int(end_ms * 1000),
+                "page_size": 200,
+            }
+            if cursor:
+                params["after"] = cursor
+            data = self.client._make_request("GET", "/v2/wallet/transactions", params=params)
+            if data is None:
+                return self._absorb_error()
+            chunk = data.get("result") if isinstance(data, dict) else None
+            if not isinstance(chunk, list):
+                break
+            rows.extend(chunk)
+            cursor = ((data.get("meta") or {}).get("after")) if isinstance(data, dict) else None
+            pages += 1
+            if not cursor or len(chunk) < 200:
+                break
+
+        out = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            kind = str(r.get("transaction_type") or "")
+            if kind not in TRADING_TYPES:
+                continue
+            created = str(r.get("created_at") or "")
+            if not created:
+                continue
+            out.append({
+                "date": created[:10],          # YYYY-MM-DD
+                "amount": fnum(r.get("amount")),
+                "asset": str(r.get("asset_symbol") or ""),
+                "type": kind,
+            })
+        self.clear_error()
+        return out
 
     def mark_price(self, symbol: str) -> Optional[float]:
         info = _contract_info(symbol)
