@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from fetch_trading_data import BASE_URL, CryptoAPIClient, to_delta_symbol
 from exchanges import SUPPORTED_EXCHANGES, catalogue, exchange_name, get_adapter, message_for
+from exchanges.market import get_market_source, market_catalogue
 import os
 import base64
 import hashlib
@@ -641,53 +642,94 @@ def prepare_candle_data_with_ema(df, ema_periods=[9, 21, 50], rsi_period=14, inc
     }
 
 
+def _market_candles_to_df(rows):
+    """MarketSource ke candle dicts → prepare_candle_data_with_ema wala DataFrame."""
+    data = []
+    for c in rows or []:
+        t = c.get('time')
+        if t is None:
+            continue
+        data.append({
+            'Open Time': pd.Timestamp(int(t), unit='ms'),
+            'Open': float(c.get('open') or 0),
+            'High': float(c.get('high') or 0),
+            'Low': float(c.get('low') or 0),
+            'Close': float(c.get('close') or 0),
+            'Volume': float(c.get('volume') or 0),
+        })
+    return pd.DataFrame(data)
+
+
+@app.route('/api/market/sources', methods=['GET'])
+def market_sources():
+    """Chart kis-kis exchange se aa sakta hai, aur kaun se timeframes."""
+    return jsonify({'success': True, 'data': market_catalogue()})
+
+
 @app.route('/api/candles', methods=['GET'])
 def get_candles():
-    """Candle data with EMA fetch karta hai"""
+    """
+    Candle data with EMA.
+
+    `exchange` query se chart ka source chunta hai (delta / coindcx / bybit).
+    Har exchange ka apna bhaav hota hai — jo user trade karta hai usi ka chart
+    dikhana chahiye, isliye default ab bhi delta hai par connected exchange
+    frontend khud bhejta hai.
+    """
     try:
         symbol = request.args.get('symbol', 'BTCUSDT')
         interval = request.args.get('interval', '1h')
         limit = int(request.args.get('limit', 100))
-        exchange = request.args.get('exchange', 'delta')
-        
+        exchange = (request.args.get('exchange') or 'delta').strip().lower()
+
         ema_periods_str = request.args.get('ema_periods', '9,21,50')
-        ema_periods = [int(p.strip()) for p in ema_periods_str.split(',')]
-        
-        # RSI parameters
+        ema_periods = [int(p.strip()) for p in ema_periods_str.split(',') if p.strip()]
+
         rsi_period = int(request.args.get('rsi_period', 14))
         include_rsi = request.args.get('include_rsi', 'false').lower() == 'true'
-        
-        # Fetch historical data
-        historical_data = client.get_historical_data(
-            symbol=symbol,
-            interval=interval,
-            limit=limit,
-            exchange_name=exchange
-        )
-        
-        if not historical_data or 'dataframe' not in historical_data:
+
+        src = get_market_source(exchange)
+        if src is None:
             return jsonify({
-                'error': 'Data fetch nahi hua. API credentials check karein.',
-                'success': False
+                'error': f'Chart source "{exchange}" support nahi hai.',
+                'success': False,
             }), 400
-        
-        df = historical_data['dataframe']
+
+        if interval not in src.INTERVALS:
+            return jsonify({
+                'error': f'{src.name} par {interval} timeframe nahi hai.',
+                'success': False,
+                'exchange': src.id,
+                'intervals': src.intervals(),
+            }), 400
+
+        rows = src.candles(symbol, interval, limit)
+        if rows is None:
+            return jsonify({
+                'error': f'{src.name} se data nahi mila. Symbol ya network check karein.',
+                'success': False,
+                'exchange': src.id,
+            }), 400
+
+        df = _market_candles_to_df(rows)
         if df is None or len(df) == 0:
             return jsonify({
                 'error': 'Candle data empty hai. Symbol ya network check karein.',
-                'success': False
+                'success': False,
+                'exchange': src.id,
             }), 400
-        
-        # Prepare data with EMA and RSI
+
         result = prepare_candle_data_with_ema(df, ema_periods, rsi_period, include_rsi)
-        
+
         return jsonify({
             'success': True,
             'symbol': symbol,
             'interval': interval,
-            **result
+            'exchange': src.id,
+            'exchange_name': src.name,
+            **result,
         })
-        
+
     except Exception as e:
         print(f"❌ Error: {e}")
         return jsonify({
@@ -1452,7 +1494,7 @@ def funding_rates():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-def _market_info_from_candles(symbol):
+def _market_info_from_candles(symbol, exchange='delta'):
     """
     Ticker na mile to fallback — poore 24 ghante ki candles se stats banao.
 
@@ -1460,23 +1502,33 @@ def _market_info_from_candles(symbol):
     candle par "24h high/low/volume" bana raha tha, isliye range ek minute ki
     hoti thi aur change hamesha 0.
     """
-    data = client.get_historical_data(symbol=symbol, interval='1h', limit=24)
-    if not data or data.get('dataframe') is None or len(data['dataframe']) == 0:
+    src = get_market_source(exchange) or get_market_source('delta')
+    if src is None:
+        return None
+    rows = src.candles(symbol, '1h', 24)
+    if not rows:
         return None
 
-    df = data['dataframe']
-    latest = df.iloc[-1]
-    first_open = float(df.iloc[0]['Open'])
-    close = float(latest['Close'])
+    closes = [c['close'] for c in rows if c.get('close')]
+    highs = [c['high'] for c in rows if c.get('high')]
+    lows = [c['low'] for c in rows if c.get('low')]
+    vols = [c.get('volume') or 0 for c in rows]
+    if not closes or not highs or not lows:
+        return None
+
+    first_open = float(rows[0].get('open') or closes[0])
+    close = float(closes[-1])
 
     return {
         'success': True,
         'symbol': symbol,
+        'exchange': src.id,
+        'exchange_name': src.name,
         'source': 'candles',
         'current_price': close,
-        'high_24h': float(df['High'].max()),
-        'low_24h': float(df['Low'].min()),
-        'volume_24h': float(df['Volume'].sum()),
+        'high_24h': float(max(highs)),
+        'low_24h': float(min(lows)),
+        'volume_24h': float(sum(vols)),
         'turnover_24h': None,
         'mark_price': None,
         'change_24h': ((close - first_open) / first_open * 100) if first_open else 0.0,
@@ -1486,62 +1538,48 @@ def _market_info_from_candles(symbol):
 @app.route('/api/market-info', methods=['GET'])
 def get_market_info():
     """
-    24 ghante ke market stats — Delta ke ticker se.
+    24 ghante ke market stats — selected exchange ke ticker se.
 
-    Pehle ye ek hi 1-minute candle fetch karta tha aur usi se `high_24h`,
-    `low_24h` aur `volume_24h` bana deta tha, to "24h range" asal mein pichhle
-    ek minute ki range hoti thi (BTC par ~$30, jabki asli range ~$2,900 hai).
-    Aur `change_24h` `len(df) > 1` ke peeche tha jo limit=1 par kabhi sach nahi
-    hota — isliye wo hamesha theek 0.00% dikhta tha.
-
-    Exchange khud rolling-24h stats maintain karta hai, isliye ab wahi use hote
-    hain; candles sirf fallback hain.
+    Exchange khud rolling-24h stats maintain karta hai, isliye pehle wahi;
+    candles sirf fallback hain.
     """
     symbol = request.args.get('symbol', 'BTCUSDT')
+    exchange = (request.args.get('exchange') or 'delta').strip().lower()
+    src = get_market_source(exchange)
+    if src is None:
+        return jsonify({
+            'error': f'Chart source "{exchange}" support nahi hai.',
+            'success': False,
+        }), 400
 
     try:
-        res = requests.get(
-            f"{BASE_URL}/v2/tickers/{to_delta_symbol(symbol)}",
-            timeout=20,
-        )
-        res.raise_for_status()
-        t = (res.json() or {}).get('result') or {}
-
-        # `close` = last traded price, wahi jo chart ki candles dikhati hain.
-        # mark/spot sirf tab jab LTP na mile (naya ya patla contract).
-        price = _fnum(t.get('close')) or _fnum(t.get('mark_price')) or _fnum(t.get('spot_price'))
-        high = _fnum(t.get('high'), _fnum(t.get('mark_high_24h')))
-        low = _fnum(t.get('low'), _fnum(t.get('mark_low_24h')))
-        # ltp_change_24h `close` ke saath match karta hai; mark_change_24h mark ke saath.
-        change = _fnum(t.get('ltp_change_24h'), _fnum(t.get('mark_change_24h'), 0.0))
-
-        if price and high and low:
+        t = src.ticker(symbol)
+        if t and t.get('price') and t.get('high_24h') and t.get('low_24h'):
             return jsonify({
                 'success': True,
                 'symbol': symbol,
+                'exchange': src.id,
+                'exchange_name': src.name,
                 'source': 'ticker',
-                'current_price': price,
-                'high_24h': high,
-                'low_24h': low,
-                # Base asset mein (BTC), wahi unit jo pehle thi — ab sach mein 24h ka.
-                'volume_24h': _fnum(t.get('volume'), 0.0),
-                # USD turnover coins ke beech compare karne ke liye.
-                'turnover_24h': _fnum(t.get('turnover_usd'), _fnum(t.get('turnover'))),
-                'mark_price': _fnum(t.get('mark_price')),
-                'change_24h': change,
+                'current_price': t['price'],
+                'high_24h': t['high_24h'],
+                'low_24h': t['low_24h'],
+                'volume_24h': t.get('volume_24h') or 0.0,
+                'turnover_24h': t.get('turnover_24h'),
+                'mark_price': t.get('mark_price'),
+                'change_24h': t.get('change_24h') or 0.0,
             })
-
-        print(f"⚠️ Market info: {symbol} ka ticker adhoora aaya, candles par ja rahe hain")
+        print(f"⚠️ Market info: {src.name}/{symbol} ka ticker adhoora aaya, candles par ja rahe hain")
     except Exception as e:
-        print(f"⚠️ Market info ticker fail ({symbol}): {e} — candles par ja rahe hain")
+        print(f"⚠️ Market info ticker fail ({src.name}/{symbol}): {e} — candles par ja rahe hain")
 
     try:
-        fallback = _market_info_from_candles(symbol)
+        fallback = _market_info_from_candles(symbol, exchange=src.id)
         if fallback:
             return jsonify(fallback)
-        return jsonify({'error': 'Data fetch nahi hua', 'success': False}), 400
+        return jsonify({'error': 'Data fetch nahi hua', 'success': False, 'exchange': src.id}), 400
     except Exception as e:
-        print(f"❌ Market info error ({symbol}): {e}")
+        print(f"❌ Market info error ({src.name}/{symbol}): {e}")
         return jsonify({'error': str(e), 'success': False}), 500
 
 
