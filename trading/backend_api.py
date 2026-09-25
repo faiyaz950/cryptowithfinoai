@@ -14,6 +14,7 @@ import time
 from fetch_trading_data import BASE_URL, CryptoAPIClient, to_delta_symbol
 from exchanges import SUPPORTED_EXCHANGES, catalogue, exchange_name, get_adapter, message_for
 from exchanges.market import get_market_source, market_catalogue
+from options_backtest import create_options_backtest_blueprint
 import os
 import base64
 import hashlib
@@ -3770,6 +3771,9 @@ def backtest_strategy():
             'error': f'Backtest failed: {str(e)}',
             'details': error_trace.split('\n')[-5:] if len(error_trace) > 200 else error_trace
         }), 500
+
+
+app.register_blueprint(create_options_backtest_blueprint(client))
 
 
 @app.route('/api/health', methods=['GET'])
